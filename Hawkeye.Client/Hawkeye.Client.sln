@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.11.35327.3
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Hawkeye.Client", "Hawkeye.Client.csproj", "{3CDF1789-621C-4500-A220-53500DD8632A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3CDF1789-621C-4500-A220-53500DD8632A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3CDF1789-621C-4500-A220-53500DD8632A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3CDF1789-621C-4500-A220-53500DD8632A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3CDF1789-621C-4500-A220-53500DD8632A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {5E8DD5B3-C11C-4FED-9E9A-4A91D80285CA}
+	EndGlobalSection
+EndGlobal

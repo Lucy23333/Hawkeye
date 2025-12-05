@@ -1,0 +1,7 @@
+{
+  "ai_endpoint": "https://api.siliconflow.cn/v1/chat/completions",
+  "ai_key": "sk-zouwvtgdqubhskwchfynlgmftmxdymevmekrfnucmhlztrsi",
+  "ai_model": "Qwen/Qwen2-VL-72B-Instruct",
+  "admin_user": "admin",
+  "admin_pass": "admin"
+}
