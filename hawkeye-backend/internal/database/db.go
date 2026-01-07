@@ -9,7 +9,7 @@ import (
 var DB *sql.DB
 
 func InitDB() {
-	dsn := "root:******@tcp(127.0.0.1:3306)/hawkeye?parseTime=true&loc=Local"
+	dsn := "root:root@tcp(127.0.0.1:3306)/hawkeye?parseTime=true&loc=Local"
 	var err error
 	DB, err = sql.Open("mysql", dsn)
 	if err != nil {

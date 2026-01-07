@@ -64,49 +64,53 @@
     <input type="file" id="avatarInput" style="display: none" accept="image/*" onchange="handleAvatarUpload(this)">
 
     <div class="header">
-        <h1>鹰眼安防 <span style="font-size:12px;color:#666">v16.4</span></h1>
+        <h1>鹰眼安防 <span style="font-size:12px;color:#666">v1.0</span></h1>
         <div class="status-badge">● 视频流在线</div>
     </div>
 
-    <div class="view-container">
-        <div id="view-home" class="view active">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-                <div style="font-size:12px;color:#888">实时监控画面</div>
-                <div style="font-size:12px;color:var(--accent);cursor:pointer" onclick="window.open('/camera?id=CAM-NEW','_blank')">+ 新窗口打开HUD</div>
-            </div>
-            <div id="device-container" class="device-list">
-                <div style="padding:40px;text-align:center;color:#666">正在扫描设备网络...</div>
-            </div>
-            <div style="text-align:center;padding:20px;color:#333;font-size:12px;border:1px dashed #333;border-radius:10px;margin-top:20px;cursor:pointer" onclick="promptNewDevice()">
-                + 手动添加设备 (模拟接入)
-            </div>
+<div class="view-container">
+    <div id="view-home" class="view active">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <div style="font-size:12px;color:#888">实时监控画面</div>
+            <div style="font-size:12px;color:var(--accent);cursor:pointer" onclick="window.open('/camera?id=CAM-NEW','_blank')">+ 新窗口打开HUD</div>
         </div>
-
-        <div id="view-dash" class="view">
-            <div class="stat-grid">
-                <div class="stat-box"><div class="stat-num" id="total-count">0</div><div class="stat-tit">累计告警</div></div>
-                <div class="stat-box"><div class="stat-num" id="device-count" style="color:#00ff88">0</div><div class="stat-tit">在线设备</div></div>
-            </div>
-            <div id="chart"></div>
-            <div style="font-size:12px;color:#888;margin-bottom:10px">全网实时告警</div>
-            <div id="event-list" class="event-list"></div>
+        <div id="device-container" class="device-list">
+            <div style="padding:40px;text-align:center;color:#666">正在扫描设备网络...</div>
         </div>
-
-        <div id="view-me" class="view">
-            <div class="profile-header">
-                <div class="avatar-container" onclick="document.getElementById('avatarInput').click()">
-                    {{if .Avatar}}<img src="/uploads/avatars/{{.Avatar}}" class="avatar" id="user-avatar">{{else}}<div class="avatar" id="user-avatar" style="display:flex;align-items:center;justify-content:center;font-size:30px">👨‍💻</div>{{end}}
-                    <div class="avatar-edit-icon">📷</div>
-                </div>
-                <div class="user-info"><h2 id="disp-username">{{.AdminUser}}</h2><p>ID: 89757 • 指挥官</p></div>
-            </div>
-            <div class="menu-list">
-                <div class="menu-item" onclick="openProfileEdit()"><span>👤 修改账户信息</span> <span>></span></div>
-                <div class="menu-item" onclick="openSettings()"><span>⚙️ 系统参数配置</span> <span>></span></div>
-                <div class="menu-item" style="margin-top:20px;color:var(--danger);border-color:var(--danger)" onclick="location.href='/logout'"><span>🚪 退出登录</span></div>
-            </div>
+        <div style="text-align:center;padding:20px;color:#333;font-size:12px;border:1px dashed #333;border-radius:10px;margin-top:20px;cursor:pointer" onclick="promptNewDevice()">
+            + 手动添加设备 (模拟接入)
         </div>
     </div>
+
+    <div id="view-dash" class="view">
+        <div class="stat-grid">
+            <div class="stat-box"><div class="stat-num" id="total-count">0</div><div class="stat-tit">累计告警</div></div>
+            <div class="stat-box"><div class="stat-num" id="device-count" style="color:#00ff88">0</div><div class="stat-tit">在线设备</div></div>
+        </div>
+        <div id="chart"></div>
+        <div style="font-size:12px;color:#888;margin-bottom:10px">全网实时告警</div>
+        <div id="event-list" class="event-list"></div>
+    </div>
+
+    <div id="view-me" class="view">
+        <div class="profile-header">
+            <div class="avatar-container" onclick="document.getElementById('avatarInput').click()">
+                <img src="/uploads/avatars/Chihaya_Anon.jpg" class="avatar" id="user-avatar" style="object-fit: cover;">
+                
+                <div class="avatar-edit-icon">Ciallo!</div> 
+            </div>
+            <div class="user-info">
+                <h2 id="disp-username">Chihaya_Anon</h2>
+                <p>ID: 89757 • 千早爱音</p>
+            </div>
+        </div>
+
+        <div class="menu-list">
+            <div class="menu-item" onclick="openProfileEdit()"><span>👤 修改账户信息</span> <span>></span></div>
+            <div class="menu-item" onclick="openSettings()"><span>⚙️ 系统参数配置</span> <span>></span></div>
+            <div class="menu-item" style="margin-top:20px;color:var(--danger);border-color:var(--danger)" onclick="location.href='/logout'"><span>🚪 退出登录</span></div>
+        </div>
+    </div> </div>
 
     <div class="bottom-nav">
         <div class="nav-btn active" id="nav-home" onclick="switchTab('home')"><span class="nav-icon">📷</span><span>设备</span></div>

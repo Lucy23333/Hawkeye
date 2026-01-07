@@ -1,8 +1,8 @@
-# 🦅 鹰眼 (Hawkeye) - 智能视觉安防系统
+# 🦅 鹰眼 (Hawkeye) - 智能视觉安防指挥系统
 
-> **Version:** V1.0  
+> **Version:** V11.4 (Final Fusion)  
 > **Status:** Stable / MVP  
-> **Author:** [Lucy23333]
+> **Author:** [sia/ID]
 
 ![Badge](https://img.shields.io/badge/Language-Go%20%7C%20C%23-blue)
 ![Badge](https://img.shields.io/badge/AI-YOLOv8%20%2B%20QwenVL-green)
@@ -18,29 +18,29 @@
 
 ---
 
-## 核心功能 (Features)
+## ✨ 核心功能 (Features)
 
-### 1.全平台视觉采集 (Multi-Platform Vision)
-* **Windows 边缘计算端：** 基于 C# WPF + OpenCV，本地运行 YOLOv8 模型。只有识别到目标时才上传，节省 90% 带宽。
+### 1. 👁️ 全平台视觉采集 (Multi-Platform Vision)
+* **Windows 边缘计算端：** 基于 C# WPF + OpenCV，本地运行 YOLOv8 模型，实现**毫秒级**人形检测。只有识别到目标时才上传，节省 90% 带宽。
 * **Mobile Web 移动端：** 任何闲置手机通过浏览器即可变身监控探头，支持自动延时摄影上传。
 
-### 2.双重 AI 大脑 (Dual AI Core)
+### 2. 🧠 双重 AI 大脑 (Dual AI Core)
 * **实时检测 (Edge):** YOLOv8s 本地推理，实时框选入侵目标。
 * **深度分析 (Cloud):** 接入 **Qwen-VL (通义千问视觉大模型)**，可对抓拍图片进行语义理解（如：“图中有个穿红衣服的人在奔跑”）。
 
-### 3.特色UI (Command Dashboard)
+### 3. 📊 赛博朋克指挥中心 (Command Dashboard)
 * **可视化大屏：** 集成 ECharts 动态图表，实时展示入侵频率与时间分布。
 * **全息日志：** 滚动式终端日志，实时反馈系统运行状态。
-* **动态交互：** 采用粒子特效引导页与登录页。
+* **动态交互：** 采用粒子特效引导页与登录页，科技感拉满。
 
-### 4.企业级数据管理 (Data Management)
+### 4. 🛡️ 企业级数据管理 (Data Management)
 * **云端存储：** 图片文件与元数据分离存储（Linux 文件系统 + MySQL）。
 * **配置中心：** 支持网页端热更新 AI 配置（Key/Model），无需重启服务。
 * **安全验证：** 完整的登录/注销机制，保护监控数据。
 
 ---
 
-##技术栈 (Tech Stack)
+## 🛠️ 技术栈 (Tech Stack)
 
 | 模块 | 技术选型 | 说明 |
 | :--- | :--- | :--- |
@@ -53,7 +53,7 @@
 
 ---
 
-##快速启动 (Quick Start)
+## 🚀 快速启动 (Quick Start)
 
 ### 1. 环境准备
 确保 Ubuntu 服务器已安装 Docker 和 Go 环境。
@@ -71,7 +71,7 @@ sudo docker exec -it hawkeye-db mysql -u root -proot -e "TRUNCATE TABLE hawkeye.
 cd ~/hawkeye-backend
 
 # 启动主程序
-go run cmd/server/main.go
+go run main.go
 
 开启公网访问 (cpolar)
 # 获取公网链接
@@ -93,11 +93,9 @@ Admin: 默认账号密码均为 admin
 
 
 未来规划 (Roadmap)
+[ ] V12.0: 引入 WebSocket 实现毫秒级画面同步。
 
-增加人脸识别库，区分熟人与陌生人。
+[ ] V13.0: 增加人脸识别库，区分熟人与陌生人。
 
-封装 Docker 镜像，实现一键 docker-compose up 部署。
-
-优化数据流传输质量
-
+[ ] V14.0: 封装 Docker 镜像，实现一键 docker-compose up 部署。
 Copyright © 2025 Hawkeye Project. All Rights Reserved.
