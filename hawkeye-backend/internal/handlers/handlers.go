@@ -20,6 +20,14 @@ import (
 	"time"
 )
 
+type AnalysisJob struct {
+	Filename string
+	DeviceID string
+}
+// 定义一个带缓冲的通道，充当“任务队列”
+// 缓冲区设为 100，意味着即使 AI 挂了，也能先暂存 100 张图
+var JobQueue = make(chan AnalysisJob, 100)
+
 // 模板系统
 var templates embed.FS
 
@@ -142,6 +150,19 @@ func UploadHandler(w http.ResponseWriter, r *http.Request) {
 	ioutil.WriteFile("./uploads/"+n, imgData, 0644)
 	database.DB.Exec("INSERT INTO events (filename, capture_time, device_id) VALUES (?,?,?)", n, now, deviceID)
 	fmt.Fprintf(w, "OK")
+
+	// 🔥 新增：自动触发 AI 分析
+    // 只有非流模式(stream)才分析，避免浪费 Token
+    if mode != "stream" {
+        select {
+        case JobQueue <- AnalysisJob{Filename: n, DeviceID: deviceID}:
+            fmt.Println("✅ 自动推入分析队列:", n)
+        default:
+            fmt.Println("⚠️ 队列已满，跳过自动分析:", n)
+        }
+    }
+
+    fmt.Fprintf(w, "OK")
 }
 
 func EventsAPIHandler(w http.ResponseWriter, r *http.Request) {
@@ -256,82 +277,23 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 func AnalyzeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	fname := r.URL.Query().Get("filename")
+	
+	// 查一下这个文件属于哪个设备
 	var deviceID string
-	database.DB.QueryRow("SELECT device_id FROM events WHERE filename = ?", fname).Scan(&deviceID)
-	if deviceID == "" {
+	err := database.DB.QueryRow("SELECT device_id FROM events WHERE filename = ?", fname).Scan(&deviceID)
+	if err != nil {
 		deviceID = "UNKNOWN"
 	}
-	imgBytes, err := ioutil.ReadFile(filepath.Join("./uploads", fname))
-	if err != nil {
-		json.NewEncoder(w).Encode(models.AnalysisResponse{Error: "File not found"})
-		return
-	}
-	b64 := base64.StdEncoding.EncodeToString(imgBytes)
-	
-	config.ConfigMu.RLock()
-	ep := config.AppConfig.AIEndpoint
-	key := config.AppConfig.AIKey
-	model := config.AppConfig.AIModel
-	config.ConfigMu.RUnlock()
 
-	//构造SiliconFlow/OpenAI格式请求
-	type Msg struct {
-		Role    string      `json:"role"`
-		Content []interface{} `json:"content"` // 使用 interface{} 混合 Text 和 ImageURL
+	// 🔥 核心修改：把任务扔进队列，而不是自己跑
+	select {
+	case JobQueue <- AnalysisJob{Filename: fname, DeviceID: deviceID}:
+		// 成功入队
+		json.NewEncoder(w).Encode(models.AnalysisResponse{Response: "⏳ 已加入分析队列 (Queued)"})
+	default:
+		// 队列满了 (比如积压了100个)
+		json.NewEncoder(w).Encode(models.AnalysisResponse{Error: "🔥 系统繁忙，队列已满"})
 	}
-	type ImgURL struct {
-		URL string `json:"url"`
-	}
-	
-	reqBody := map[string]interface{}{
-		"model":      model,
-		"max_tokens": 300,
-		"stream":     false,
-		"messages": []Msg{
-			{
-				Role: "user",
-				Content: []interface{}{
-					map[string]string{"type": "text", "text": "Describe the danger level and details in this image."},
-					map[string]interface{}{"type": "image_url", "image_url": ImgURL{URL: "data:image/jpeg;base64," + b64}},
-				},
-			},
-		},
-	}
-
-	p, _ := json.Marshal(reqBody)
-	req, _ := http.NewRequest("POST", ep, bytes.NewBuffer(p))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+key)
-	client := &http.Client{Timeout: 60 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		json.NewEncoder(w).Encode(models.AnalysisResponse{Error: "Net Error"})
-		return
-	}
-	defer resp.Body.Close()
-	
-	//解析响应
-	body, _ := ioutil.ReadAll(resp.Body)
-	var apiResp struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	
-	if err := json.Unmarshal(body, &apiResp); err != nil || len(apiResp.Choices) == 0 {
-		json.NewEncoder(w).Encode(models.AnalysisResponse{Error: "AI No Reply"})
-		return
-	}
-	ans := apiResp.Choices[0].Message.Content
-	
-	//异步处理报警
-	go checkAndAlert(ans, fname, deviceID)
-	//更新数据库
-	go database.DB.Exec("UPDATE events SET ai_analysis = ? WHERE filename = ?", ans, fname)
-	
-	json.NewEncoder(w).Encode(models.AnalysisResponse{Response: ans})
 }
 
 func checkAndAlert(analysis string, filename string, deviceID string) {
@@ -360,4 +322,88 @@ func sendDingTalk(content string, filename string, deviceID string) {
 	msg.Markdown.Text = fmt.Sprintf("### 🦅 鹰眼系统安全预警\n\n**📷 设备**: %s\n\n**⏰ 时间**: %s\n\n**🤖 AI 分析**: <font color=#FF0000>%s</font>\n\n**📸 证据文件**: %s", deviceID, time.Now().In(models.CstZone).Format("15:04:05"), content, filename)
 	payload, _ := json.Marshal(msg)
 	http.Post(config.HardcodedWebhook, "application/json", bytes.NewBuffer(payload))
+}
+
+// --- 🔥 新增：后台工人，负责一直在队列里拿活干 ---
+func StartWorker() {
+	fmt.Println("👷 AI 分析工人已上班 (Worker Started)")
+	for job := range JobQueue {
+		// 收到任务，开始干活
+		fmt.Printf("📥 正在处理任务: %s (设备: %s)\n", job.Filename, job.DeviceID)
+		performAnalysis(job.Filename, job.DeviceID)
+	}
+}
+
+// --- 🔥 新增：核心 AI 逻辑 (从 AnalyzeHandler 提取出来的) ---
+func performAnalysis(filename string, deviceID string) {
+	// 1. 读取文件
+	imgBytes, err := ioutil.ReadFile(filepath.Join("./uploads", filename))
+	if err != nil {
+		fmt.Println("❌ 文件读取失败:", err)
+		return
+	}
+	b64 := base64.StdEncoding.EncodeToString(imgBytes)
+
+	// 2. 准备配置
+	config.ConfigMu.RLock()
+	ep := config.AppConfig.AIEndpoint
+	key := config.AppConfig.AIKey
+	model := config.AppConfig.AIModel
+	config.ConfigMu.RUnlock()
+
+	// 3. 构造请求 (与原先相同)
+	type Msg struct {
+		Role    string      `json:"role"`
+		Content []interface{} `json:"content"`
+	}
+	type ImgURL struct {
+		URL string `json:"url"`
+	}
+	reqBody := map[string]interface{}{
+		"model":      model,
+		"max_tokens": 300,
+		"stream":     false,
+		"messages": []Msg{
+			{
+				Role: "user",
+				Content: []interface{}{
+					map[string]string{"type": "text", "text": "Describe the danger level and details in this image."},
+					map[string]interface{}{"type": "image_url", "image_url": ImgURL{URL: "data:image/jpeg;base64," + b64}},
+				},
+			},
+		},
+	}
+
+	p, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", ep, bytes.NewBuffer(p))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+	
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println("❌ AI 请求失败:", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	// 4. 解析结果
+	body, _ := ioutil.ReadAll(resp.Body)
+	var apiResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &apiResp); err != nil || len(apiResp.Choices) == 0 {
+		fmt.Println("❌ AI 无响应或解析失败")
+		return
+	}
+	ans := apiResp.Choices[0].Message.Content
+
+	// 5. 后续处理 (存库 + 报警)
+	fmt.Printf("🤖 AI 分析完成: %s\n", ans)
+	database.DB.Exec("UPDATE events SET ai_analysis = ? WHERE filename = ?", ans, filename)
+	checkAndAlert(ans, filename, deviceID) // 复用你原有的报警函数
 }

@@ -20,6 +20,10 @@ func main() {
 	// 2. 注入模板 (使用 web 包里的 Content)
 	handlers.SetTemplates(web.Content) 
 
+	// 🔥 新增：启动后台 Worker 协程
+	// 必须用 go 关键字，否则主线程会卡在这里
+	go handlers.StartWorker()
+
 	// 3. 注册路由
 	http.HandleFunc("/", handlers.SplashHandler)
 	http.HandleFunc("/app", handlers.AuthMiddleware(handlers.AppHandler))
