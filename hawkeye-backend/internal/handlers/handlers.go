@@ -306,8 +306,25 @@ func checkAndAlert(analysis string, filename string, deviceID string) {
         if strings.Contains(analysis, kw) {
             fmt.Printf("🚨 触发告警! 关键词: %s\n", kw) //打印触发信息
             go sendDingTalk(analysis, filename, deviceID)
+			// --- 🔥 新增：向网页端广播 JSON 警报 ---
+            // 构造一个 JSON 数据，让前端好解析
+            alertData := map[string]string{
+                "type":      "ALERT",
+                "device_id": deviceID,
+                "time":      time.Now().Format("15:04:05"),
+                "content":   analysis,
+                "image":     "/uploads/" + filename,
+                "keyword":   kw,
+            }
+            jsonBytes, _ := json.Marshal(alertData)
+
+			// 📣 全员广播！
+            stream.AlertBroker.Broadcast(string(jsonBytes))
+            // ----------------------------------------
+            
             triggered = true
             break
+
         }
     }
     

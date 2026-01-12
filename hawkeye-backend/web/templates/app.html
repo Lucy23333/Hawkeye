@@ -543,6 +543,77 @@
             });
         }
         window.addEventListener('resize', ()=>chartInstance && chartInstance.resize());
+
+        // ... 现有的 JS 代码 ...
+
+    // 🔥 启动 SSE 监听
+    function initAlertSystem() {
+        console.log("📡 连接报警系统...");
+        const evtSource = new EventSource("/api/events/subscribe");
+
+        evtSource.onmessage = function(event) {
+            // 解析后端发来的 JSON
+            const data = JSON.parse(event.data);
+            
+            if (data.type === "ALERT") {
+                console.log("🚨 收到警报:", data);
+                showRedAlert(data);
+            }
+        };
+
+        evtSource.onerror = function() {
+            console.log("连接断开，3秒后重连...");
+            evtSource.close();
+            setTimeout(initAlertSystem, 3000);
+        };
+    }
+
+    // 🔥 炫酷的红色弹窗特效
+    function showRedAlert(data) {
+        // 1. 播放报警音 (可选)
+        // new Audio('/static/alarm.mp3').play().catch(e=>{});
+
+        // 2. 创建一个全屏闪烁层
+        const overlay = document.createElement('div');
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.width = '100vw';
+        overlay.style.height = '100vh';
+        overlay.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
+        overlay.style.zIndex = '9999';
+        overlay.style.display = 'flex';
+        overlay.style.justifyContent = 'center';
+        overlay.style.alignItems = 'center';
+        overlay.style.pointerEvents = 'none'; // 让鼠标能点透
+        overlay.innerHTML = `
+            <div style="background: #000; border: 2px solid #ff0000; padding: 20px; color: #ff0000; text-align: center; box-shadow: 0 0 50px #ff0000;">
+                <h1 style="font-size: 3em; margin: 0;">⚠️ INTRUSION DETECTED ⚠️</h1>
+                <h3 style="color: #fff;">${data.device_id} | ${data.time}</h3>
+                <p style="color: #ccc; font-size: 1.2em;">${data.content}</p>
+                <img src="${data.image}" style="max-height: 300px; border: 1px solid #ff0000; margin-top: 10px;">
+            </div>
+        `;
+        
+        document.body.appendChild(overlay);
+
+        // 3. 闪烁动画
+        let flashCount = 0;
+        const interval = setInterval(() => {
+            overlay.style.visibility = (overlay.style.visibility === 'hidden') ? 'visible' : 'hidden';
+            flashCount++;
+            if (flashCount > 10) { // 闪5次后消失
+                clearInterval(interval);
+                document.body.removeChild(overlay);
+            }
+        }, 300);
+        
+        // 4. 同时刷新一下左侧的事件列表，让新数据出来
+        fetchEvents(); 
+    }
+
+    // 页面加载完成后启动
+    window.addEventListener('load', initAlertSystem);
     </script>
 </body>
 </html>

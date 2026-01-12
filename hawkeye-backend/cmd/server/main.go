@@ -5,6 +5,7 @@ import (
 	"hawkeye/internal/config"
 	"hawkeye/internal/database"
 	"hawkeye/internal/handlers"
+	"hawkeye/internal/stream"
 	"hawkeye/web" 
 	"net/http"
 	"os"
@@ -32,6 +33,9 @@ func main() {
 	http.HandleFunc("/camera", handlers.CameraHandler)
 
 	http.HandleFunc("/api/stream", handlers.StreamHandler)
+	// 🔥 新增：SSE 实时警报流
+    http.Handle("/api/events/subscribe", stream.AlertBroker)
+
 	http.HandleFunc("/api/events", handlers.AuthMiddleware(handlers.EventsAPIHandler))
 	http.HandleFunc("/api/devices", handlers.AuthMiddleware(handlers.DevicesAPIHandler))
 	http.HandleFunc("/settings", handlers.AuthMiddleware(handlers.SettingsHandler))
