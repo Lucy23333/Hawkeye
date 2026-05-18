@@ -22,7 +22,7 @@
         
         body { 
             margin: 0; background: var(--bg); color: var(--text-main); 
-            font-family: 'Rajdhani', sans-serif; /* 科技感标题字体 */
+            font-family: 'Rajdhani', sans-serif;
             overflow: hidden; height: 100vh; display: flex; flex-direction: column;
             user-select: none;
         }
@@ -81,11 +81,11 @@
         }
         .status-dot { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 8px var(--accent); animation: blink 2s infinite; }
 
-        /* --- 全息卡片 (Holographic Cards) --- */
+        /*全息卡片*/
         .holo-card { 
             background: var(--panel); 
             border: 1px solid var(--glass-border);
-            border-radius: 4px; /* 硬朗圆角 */
+            border-radius: 4px;
             position: relative; overflow: hidden;
             backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
             box-shadow: 0 10px 40px rgba(0,0,0,0.4);
@@ -253,6 +253,8 @@
                 </div>
             </div>
 
+            <div id="queue-status" style="font-family:'JetBrains Mono';font-size:11px;color:#666;margin:0 0 10px 5px;">QUEUE: 0/100</div>
+
             <div class="holo-card" style="padding:15px;height:220px;">
                 <div id="chart" style="width:100%;height:100%;"></div>
             </div>
@@ -311,6 +313,8 @@
                     <label>AI_ENDPOINT</label><input id="s-ep" value="{{.AIEndpoint}}">
                     <label>ACCESS_TOKEN</label><input id="s-key" type="password" value="{{.AIKey}}">
                     <label>MODEL_VERSION</label><input id="s-model" value="{{.AIModel}}">
+                    <label>DEVICE_KEY</label><input id="s-device-key" value="{{.DeviceKey}}">
+                    <label>ALERT_KEYWORDS</label><input id="s-keywords" value="{{.AlertKeywords}}">
                     <button class="primary">COMMIT CHANGES</button>
                 </form>
             </div>
@@ -336,6 +340,35 @@
     </div>
 
     <script>
+        function getCookie(name) {
+            const parts = (`; ${document.cookie}`).split(`; ${name}=`);
+            if (parts.length === 2) return parts.pop().split(';').shift();
+            return '';
+        }
+
+        function getDeviceKey() {
+            return localStorage.getItem('deviceKey') || '';
+        }
+
+        function authFetch(url, options = {}) {
+            const csrf = getCookie('csrf');
+            const headers = Object.assign({}, options.headers || {});
+            if (csrf) headers['X-CSRF-Token'] = csrf;
+            return fetch(url, Object.assign({}, options, { headers }));
+        }
+
+        function escapeHTML(value) {
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function escapeAttr(value) {
+            return escapeHTML(value).replace(/`/g, '&#96;');
+        }
         // --- Three.js 3D 地球背景核心逻辑 ---
         function init3D() {
             const container = document.getElementById('webgl-container');
@@ -423,7 +456,6 @@
         };
 
         function playAudio(type) {
-            // 这里可以添加音效逻辑
             // const audio = new Audio('/sounds/click.mp3'); audio.play();
         }
 
@@ -444,11 +476,12 @@
             if(tab === 'home') fetchDevices();
             if(tab === 'dash') {
                 fetchEvents();
+                fetchQueue();
                 setTimeout(initChart, 200);
             }
         }
 
-        // --- 弹窗控制 (修复了之前的定位问题) ---
+        //弹窗控制(修复了之前的定位问题) 
         function openSettings() { document.getElementById('settings-overlay').style.display = 'flex'; setTimeout(()=>document.getElementById('settings-overlay').classList.add('show'), 10); }
         function closeSettings() { document.getElementById('settings-overlay').classList.remove('show'); setTimeout(()=>document.getElementById('settings-overlay').style.display = 'none', 300); }
         function openProfileEdit() { document.getElementById('profile-overlay').style.display = 'flex'; setTimeout(()=>document.getElementById('profile-overlay').classList.add('show'), 10); }
@@ -457,30 +490,48 @@
         function openHUD(id) { document.getElementById('hud-frame').src = '/camera?id='+id; document.getElementById('hud-overlay').style.display = 'block'; }
         function closeHUD() { document.getElementById('hud-overlay').style.display = 'none'; document.getElementById('hud-frame').src = ''; }
 
-        // --- 数据获取与渲染 ---
+        //数据获取与渲染
         function fetchDevices() {
             fetch('/api/devices').then(r=>r.json()).then(d => {
                 const c = document.getElementById('device-container');
                 document.getElementById('device-count').innerText = d.length;
                 if(!d.length) { c.innerHTML = '<div style="padding:40px;text-align:center;color:#666;font-family:\'JetBrains Mono\'">NO_SIGNAL_DETECTED</div>'; return; }
-                c.innerHTML = d.map(dev => 
-                    `<div class="holo-card" onclick="openHUD('${dev.id}')">
+                const deviceKey = getDeviceKey();
+                const keyParam = deviceKey ? `&device_key=${encodeURIComponent(deviceKey)}` : '';
+                c.innerHTML = d.map(dev => {
+                    const safeId = escapeAttr(dev.id || '');
+                    const idFragment = (dev.id || '').split('-')[1] || '00';
+                    return `
+                    <div class="holo-card device-card" data-device-id="${safeId}">
                         <div class="corner-tl"></div><div class="corner-br"></div>
                         <div class="device-preview">
                             <div class="live-tag">LIVE FEED</div>
-                            <img src="/api/stream?device_id=${dev.id}" onerror="this.style.opacity=0">
-                            <div class="device-id-overlay">${dev.id.split('-')[1] || '00'}</div>
+                            <img src="/api/stream?device_id=${encodeURIComponent(dev.id || '')}${keyParam}" onerror="this.style.opacity=0">
+                            <div class="device-id-overlay">${escapeHTML(idFragment)}</div>
                         </div>
                         <div class="device-info">
                             <div>
-                                <div class="device-name">${dev.id}</div>
+                                <div class="device-name">${escapeHTML(dev.id || '')}</div>
                                 <div class="device-meta">IP: 192.168.1.X • 5Ghz</div>
                             </div>
                             <div style="color:var(--accent);font-size:12px">● CONNECTED</div>
                         </div>
-                        <div class="del-btn" style="position:absolute;bottom:15px;right:60px;z-index:10;color:#444" onclick="deleteDevice('${dev.id}', event)">✕</div>
-                    </div>`
-                ).join('');
+                        <div class="del-btn" style="position:absolute;bottom:15px;right:60px;z-index:10;color:#444" data-device-id="${safeId}">✕</div>
+                    </div>`;
+                }).join('');
+
+                document.querySelectorAll('.device-card').forEach(card => {
+                    card.addEventListener('click', () => {
+                        openHUD(card.dataset.deviceId || '');
+                    });
+                });
+
+                document.querySelectorAll('.del-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        deleteDevice(btn.dataset.deviceId || '');
+                    });
+                });
             });
         }
 
@@ -488,42 +539,80 @@
             fetch('/api/events').then(r=>r.json()).then(d => {
                 document.getElementById('total-count').innerText = d.count;
                 document.getElementById('event-list').innerHTML = (d.events || []).map(e => 
-                    `<div class="event-item">
-                        <a href="/uploads/${e.Filename}" target="_blank"><img src="/uploads/${e.Filename}" class="event-img"></a>
+                    `<div class="event-item" data-filename="${escapeAttr(e.Filename || '')}">
+                        <a href="/uploads/${encodeURIComponent(e.Filename || '')}" target="_blank"><img src="/uploads/${encodeURIComponent(e.Filename || '')}" class="event-img"></a>
                         <div class="event-content">
-                            <div style="color:var(--accent);font-weight:bold;font-size:12px;font-family:'JetBrains Mono'">⚠ ${e.DeviceID}</div>
-                            <div style="font-size:11px;color:#ccc;margin:2px 0">${e.AIAnalysis || 'PROCESSING...'}</div>
-                            <div style="font-size:10px;color:#666;font-family:'JetBrains Mono'">${e.CaptureTime}</div>
-                            ${!e.AIAnalysis ? `<button class="btn-analyze" onclick="analyze('${e.Filename}')">INIT_AI_SCAN</button>` : ''}
+                            <div style="color:var(--accent);font-weight:bold;font-size:12px;font-family:'JetBrains Mono'">⚠ ${escapeHTML(e.DeviceID || '')}</div>
+                            <div style="font-size:11px;color:#ccc;margin:2px 0">${escapeHTML(e.AIAnalysis || 'PROCESSING...')}</div>
+                            <div style="font-size:10px;color:#888;font-family:'JetBrains Mono'">STATUS: ${escapeHTML(e.Status || 'open')} ${e.Tags ? '• TAGS: ' + escapeHTML(e.Tags) : ''}</div>
+                            <div style="font-size:10px;color:#666;font-family:'JetBrains Mono'">${escapeHTML(e.CaptureTime || '')}</div>
+                            ${!e.AIAnalysis ? `<button class="btn-analyze" data-filename="${escapeAttr(e.Filename || '')}">INIT_AI_SCAN</button>` : ''}
+                            ${e.Status !== 'closed' ? `<button class="btn-analyze btn-ack" data-filename="${escapeAttr(e.Filename || '')}">ACK</button>` : ''}
                         </div>
-                        <div onclick="deleteEvent('${e.Filename}')" style="color:#444;cursor:pointer;padding:5px">✕</div>
+                        <div class="event-delete" data-filename="${escapeAttr(e.Filename || '')}" style="color:#444;cursor:pointer;padding:5px">✕</div>
                     </div>`
                 ).join('');
+
+                document.querySelectorAll('.event-delete').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        deleteEvent(btn.dataset.filename || '');
+                    });
+                });
+
+                document.querySelectorAll('.btn-analyze').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        if (btn.classList.contains('btn-ack')) {
+                            ackEvent(btn.dataset.filename || '');
+                            return;
+                        }
+                        analyze(btn.dataset.filename || '');
+                    });
+                });
             });
         }
 
-        // --- 功能函数 ---
-        function deleteDevice(id, e) { e.stopPropagation(); if(confirm('CONFIRM DELETION?')) fetch('/delete_device?device_id='+id, {method:'POST'}).then(()=>{showToast('NODE_REMOVED'); fetchDevices();}); }
-        function deleteEvent(f) { if(confirm('PURGE RECORD?')) fetch('/delete?filename='+f, {method:'POST'}).then(()=>{showToast('LOG_PURGED'); fetchEvents();}); }
-        function analyze(f) { showToast('UPLOADING_TO_CORE...'); fetch('/analyze?filename='+f).then(()=>{showToast('ANALYSIS_COMPLETE'); fetchEvents();}); }
+        function fetchQueue() {
+            authFetch('/api/queue').then(r=>r.json()).then(d => {
+                const el = document.getElementById('queue-status');
+                if (!el) return;
+                el.innerText = `QUEUE: ${d.length}/${d.capacity}`;
+            }).catch(() => {});
+        }
+
+        //功能函数
+        function deleteDevice(id) { if(confirm('CONFIRM DELETION?')) authFetch('/delete_device?device_id='+encodeURIComponent(id), {method:'POST'}).then(()=>{showToast('NODE_REMOVED'); fetchDevices();}); }
+        function deleteEvent(f) { if(confirm('PURGE RECORD?')) authFetch('/delete?filename='+encodeURIComponent(f), {method:'POST'}).then(()=>{showToast('LOG_PURGED'); fetchEvents();}); }
+        function analyze(f) { showToast('UPLOADING_TO_CORE...'); authFetch('/analyze', {method:'POST', body: JSON.stringify({filename: f})}).then(()=>{showToast('ANALYSIS_COMPLETE'); fetchEvents();}); }
+        function ackEvent(f) { authFetch('/api/events/update', {method:'POST', body: JSON.stringify({filename: f, status: 'closed'})}).then(()=>{showToast('EVENT_ACKED'); fetchEvents();}); }
         function promptNewDevice() { const id = prompt("INPUT DEVICE ID:", "CAM-UNIT-" + Math.floor(Math.random()*99)); if(id) window.location.href = '/camera?id='+id; }
         
         function saveConfig() { 
-            const d = {ai_endpoint:document.getElementById('s-ep').value, ai_key:document.getElementById('s-key').value, ai_model:document.getElementById('s-model').value, admin_user:"{{.AdminUser}}"};
-            fetch('/settings', {method:'POST', body:JSON.stringify(d)}).then(()=>{ closeSettings(); showToast('CONFIG_SAVED'); });
+            const d = {
+                ai_endpoint:document.getElementById('s-ep').value,
+                ai_key:document.getElementById('s-key').value,
+                ai_model:document.getElementById('s-model').value,
+                device_key:document.getElementById('s-device-key').value,
+                alert_keywords:document.getElementById('s-keywords').value,
+                admin_user:"{{.AdminUser}}"
+            };
+            authFetch('/settings', {method:'POST', body:JSON.stringify(d)}).then(()=>{
+                localStorage.setItem('deviceKey', document.getElementById('s-device-key').value || '');
+                closeSettings();
+                showToast('CONFIG_SAVED');
+            });
         }
         function saveProfile() {
              const u=document.getElementById('p-user').value, p=document.getElementById('p-pass').value;
-             fetch('/api/update_profile',{method:'POST', body:JSON.stringify({username:u, password:p})}).then(()=>{ closeProfileEdit(); showToast('PROFILE_UPDATED'); location.reload(); });
+             authFetch('/api/update_profile',{method:'POST', body:JSON.stringify({username:u, password:p})}).then(()=>{ closeProfileEdit(); showToast('PROFILE_UPDATED'); location.reload(); });
         }
         function handleAvatarUpload(input) {
             if (input.files && input.files[0]) {
                 const fd = new FormData(); fd.append('avatar', input.files[0]);
-                fetch('/api/upload_avatar', {method:'POST', body:fd}).then(r=>r.json()).then(d=>{ if(d.status==='ok') location.reload(); });
+                authFetch('/api/upload_avatar', {method:'POST', body:fd}).then(r=>r.json()).then(d=>{ if(d.status==='ok') location.reload(); });
             }
         }
 
-        // --- ECharts 图表 ---
+        //ECharts 图表
         let chartInstance;
         function initChart() {
             const dom = document.getElementById('chart');
@@ -544,19 +633,20 @@
         }
         window.addEventListener('resize', ()=>chartInstance && chartInstance.resize());
 
-        // ... 现有的 JS 代码 ...
 
-    // 🔥 启动 SSE 监听
+    //启动 SSE 监听
     function initAlertSystem() {
-        console.log("📡 连接报警系统...");
-        const evtSource = new EventSource("/api/events/subscribe");
+        console.log("连接报警系统...");
+        const deviceKey = getDeviceKey();
+        const sseUrl = deviceKey ? `/api/events/subscribe?device_key=${encodeURIComponent(deviceKey)}` : "/api/events/subscribe";
+        const evtSource = new EventSource(sseUrl);
 
         evtSource.onmessage = function(event) {
             // 解析后端发来的 JSON
             const data = JSON.parse(event.data);
             
             if (data.type === "ALERT") {
-                console.log("🚨 收到警报:", data);
+                console.log("收到警报:", data);
                 showRedAlert(data);
             }
         };
@@ -568,12 +658,11 @@
         };
     }
 
-    // 🔥 炫酷的红色弹窗特效
+    //红色弹窗特效
     function showRedAlert(data) {
-        // 1. 播放报警音 (可选)
         // new Audio('/static/alarm.mp3').play().catch(e=>{});
 
-        // 2. 创建一个全屏闪烁层
+        //创建全屏闪烁层
         const overlay = document.createElement('div');
         overlay.style.position = 'fixed';
         overlay.style.top = '0';
@@ -585,7 +674,7 @@
         overlay.style.display = 'flex';
         overlay.style.justifyContent = 'center';
         overlay.style.alignItems = 'center';
-        overlay.style.pointerEvents = 'none'; // 让鼠标能点透
+        overlay.style.pointerEvents = 'none';
         overlay.innerHTML = `
             <div style="background: #000; border: 2px solid #ff0000; padding: 20px; color: #ff0000; text-align: center; box-shadow: 0 0 50px #ff0000;">
                 <h1 style="font-size: 3em; margin: 0;">⚠️ INTRUSION DETECTED ⚠️</h1>
@@ -597,18 +686,18 @@
         
         document.body.appendChild(overlay);
 
-        // 3. 闪烁动画
+        //闪烁动画
         let flashCount = 0;
         const interval = setInterval(() => {
             overlay.style.visibility = (overlay.style.visibility === 'hidden') ? 'visible' : 'hidden';
             flashCount++;
-            if (flashCount > 10) { // 闪5次后消失
+            if (flashCount > 10) {
                 clearInterval(interval);
                 document.body.removeChild(overlay);
             }
         }, 300);
         
-        // 4. 同时刷新一下左侧的事件列表，让新数据出来
+        //同时刷新左侧的事件列表
         fetchEvents(); 
     }
 

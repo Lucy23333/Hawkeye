@@ -5,10 +5,11 @@ import (
 	"hawkeye/internal/config"
 	"hawkeye/internal/database"
 	"hawkeye/internal/handlers"
-	"hawkeye/internal/stream"
-	"hawkeye/web" 
+	"hawkeye/web"
+	"log"
 	"net/http"
 	"os"
+	"time"
 )
 
 
@@ -21,8 +22,7 @@ func main() {
 	// 2. 注入模板 (使用 web 包里的 Content)
 	handlers.SetTemplates(web.Content) 
 
-	// 🔥 新增：启动后台 Worker 协程
-	// 必须用 go 关键字，否则主线程会卡在这里
+	// 启动后台 Worker 协程
 	go handlers.StartWorker()
 
 	// 3. 注册路由
@@ -31,12 +31,15 @@ func main() {
 	http.HandleFunc("/login", handlers.LoginHandler)
 	http.HandleFunc("/logout", handlers.LogoutHandler)
 	http.HandleFunc("/camera", handlers.CameraHandler)
+	http.HandleFunc("/health", handlers.HealthHandler)
 
 	http.HandleFunc("/api/stream", handlers.StreamHandler)
-	// 🔥 新增：SSE 实时警报流
-    http.Handle("/api/events/subscribe", stream.AlertBroker)
+	// SSE 实时警报流
+	http.HandleFunc("/api/events/subscribe", handlers.AlertSubscribeHandler)
 
 	http.HandleFunc("/api/events", handlers.AuthMiddleware(handlers.EventsAPIHandler))
+	http.HandleFunc("/api/events/update", handlers.AuthMiddleware(handlers.EventsUpdateHandler))
+	http.HandleFunc("/api/queue", handlers.AuthMiddleware(handlers.QueueStatusHandler))
 	http.HandleFunc("/api/devices", handlers.AuthMiddleware(handlers.DevicesAPIHandler))
 	http.HandleFunc("/settings", handlers.AuthMiddleware(handlers.SettingsHandler))
 	http.HandleFunc("/api/upload_avatar", handlers.AuthMiddleware(handlers.AvatarUploadHandler))
@@ -49,6 +52,13 @@ func main() {
 	
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("./uploads"))))
 
-	fmt.Println("🦅 鹰眼 已启动 http://localhost:8080")
-	http.ListenAndServe(":8080", nil)
+	fmt.Println("鹰眼 已启动 http://localhost:8080")
+	srv := &http.Server{
+		Addr:              ":8080",
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	log.Fatal(srv.ListenAndServe())
 }

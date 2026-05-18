@@ -1,7 +1,10 @@
 {
   "ai_endpoint": "https://api.siliconflow.cn/v1/chat/completions",
-  "ai_key": "sk-zouwvtgdqubhskwchfynlgmftmxdymevmekrfnucmhlztrsi",
+  "ai_key": "YOUR_API_KEY_HERE",
   "ai_model": "Qwen/Qwen2-VL-72B-Instruct",
   "admin_user": "admin",
-  "admin_pass": "admin"
+  "admin_pass": "admin",
+  "ding_webhook": "",
+  "device_key": "",
+  "alert_keywords": "火,烟,倒,血,刀,棍,入侵,陌生人,打架,攀爬,求救,Fire,Smoke,Knife,Blood"
 }

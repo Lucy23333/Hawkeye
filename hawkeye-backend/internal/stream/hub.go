@@ -38,7 +38,7 @@ func BroadcastFrame(deviceID string, imgData []byte) {
 		select {
 		case ch <- imgData:
 		default:
-			// 如果通道满了，丢弃该帧以防止阻塞
+		
 		}
 	}
 }

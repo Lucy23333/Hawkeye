@@ -89,7 +89,11 @@ AI Endpoint: https://api.siliconflow.cn/v1/chat/completions (硅基流动)
 
 AI Model: Qwen/Qwen2-VL-72B-Instruct
 
-Admin: 默认账号密码均为 admin
+Admin: 默认账号密码均为 admin（建议首次登录后修改）
+
+也可以使用环境变量覆盖配置（避免明文落盘密钥）：
+
+AI_ENDPOINT, AI_KEY, AI_MODEL, ADMIN_USER, ADMIN_PASS, DING_WEBHOOK, DEVICE_KEY, ALERT_KEYWORDS
 
 
 未来规划 (Roadmap)

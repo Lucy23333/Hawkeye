@@ -13,6 +13,9 @@ type Config struct {
 	AdminUser  string `json:"admin_user"`
 	AdminPass  string `json:"admin_pass"`
 	Avatar     string `json:"avatar"`
+	DingWebhook string `json:"ding_webhook"`
+	DeviceKey   string `json:"device_key"`
+	AlertKeywords string `json:"alert_keywords"`
 }
 
 // Event 数据库事件模型
@@ -22,6 +25,8 @@ type Event struct {
 	CaptureTime string `json:"CaptureTime"`
 	AIAnalysis  string `json:"AIAnalysis"`
 	DeviceID    string `json:"DeviceID"`
+	Status      string `json:"Status"`
+	Tags        string `json:"Tags"`
 }
 
 // APIResponse 通用列表响应
@@ -35,6 +40,7 @@ type DeviceInfo struct {
 	ID         string `json:"id"`
 	LastImage  string `json:"last_image"`
 	LastActive string `json:"last_active"`
+	Enabled    bool   `json:"enabled"`
 }
 
 // AnalysisResponse AI分析响应

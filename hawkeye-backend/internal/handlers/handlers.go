@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"bytes"
+	"crypto/rand"
+	"database/sql"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"hawkeye/internal/config"
@@ -13,10 +16,12 @@ import (
 	"html/template"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -27,6 +32,38 @@ type AnalysisJob struct {
 // 定义一个带缓冲的通道，充当“任务队列”
 // 缓冲区设为 100，意味着即使 AI 挂了，也能先暂存 100 张图
 var JobQueue = make(chan AnalysisJob, 100)
+
+type sessionInfo struct {
+	CSRF    string
+	Expires time.Time
+}
+
+const (
+	sessionCookieName = "session"
+	csrfCookieName    = "csrf"
+	sessionTTL        = 24 * time.Hour
+)
+
+var (
+	sessionMu sync.RWMutex
+	sessions  = map[string]sessionInfo{}
+)
+
+var serverStart = time.Now()
+
+type rateWindow struct {
+	start time.Time
+	count int
+}
+
+type rateLimiter struct {
+	mu     sync.Mutex
+	limit  int
+	window time.Duration
+	items  map[string]*rateWindow
+}
+
+var uploadLimiter = newRateLimiter(60, time.Minute)
 
 // 模板系统
 var templates embed.FS
@@ -65,7 +102,12 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 	p := config.AppConfig.AdminPass
 	config.ConfigMu.RUnlock()
 	if c.Username == u && c.Password == p {
-		http.SetCookie(w, &http.Cookie{Name: "token", Value: "ok", Path: "/"})
+		sessionToken := newToken(32)
+		csrfToken := newToken(16)
+		sessionMu.Lock()
+		sessions[sessionToken] = sessionInfo{CSRF: csrfToken, Expires: time.Now().Add(sessionTTL)}
+		sessionMu.Unlock()
+		setSessionCookies(w, r, sessionToken, csrfToken)
 		fmt.Fprint(w, "OK")
 	} else {
 		http.Error(w, "Fail", 401)
@@ -73,7 +115,12 @@ func LoginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func LogoutHandler(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: "token", Value: "", MaxAge: -1, Path: "/"})
+	if c, err := r.Cookie(sessionCookieName); err == nil {
+		sessionMu.Lock()
+		delete(sessions, c.Value)
+		sessionMu.Unlock()
+	}
+	clearSessionCookies(w, r)
 	http.Redirect(w, r, "/login", 302)
 }
 
@@ -91,8 +138,8 @@ func CameraHandler(w http.ResponseWriter, r *http.Request) {
 
 func AuthMiddleware(n http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, e := r.Cookie("token")
-		if e != nil || c.Value != "ok" {
+		_, ok := getSession(r)
+		if !ok {
 			http.Redirect(w, r, "/login", 302)
 			return
 		}
@@ -103,6 +150,9 @@ func AuthMiddleware(n http.HandlerFunc) http.HandlerFunc {
 //API Handlers
 
 func StreamHandler(w http.ResponseWriter, r *http.Request) {
+	if !requireDeviceKey(w, r) {
+		return
+	}
 	devID := r.URL.Query().Get("device_id")
 	if devID == "" {
 		devID = "CAM-01"
@@ -118,10 +168,25 @@ func StreamHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func AlertSubscribeHandler(w http.ResponseWriter, r *http.Request) {
+	if !requireDeviceKey(w, r) {
+		return
+	}
+	stream.AlertBroker.ServeHTTP(w, r)
+}
+
 func UploadHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		return
 	}
+	if !requireDeviceKey(w, r) {
+		return
+	}
+	if !uploadLimiter.Allow(getClientIP(r)) {
+		http.Error(w, "Too Many Requests", 429)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	r.ParseMultipartForm(10 << 20)
 	file, _, err := r.FormFile("image")
 	if err != nil {
@@ -135,6 +200,15 @@ func UploadHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	mode := r.FormValue("mode")
 
+	var enabled int
+	if err := database.DB.QueryRow("SELECT enabled FROM devices WHERE id=?", deviceID).Scan(&enabled); err == nil && enabled == 0 {
+		http.Error(w, "Device disabled", 403)
+		return
+	}
+
+	now := time.Now().In(models.CstZone)
+	database.DB.Exec("INSERT INTO devices (id, last_seen, enabled) VALUES (?,?,1) ON DUPLICATE KEY UPDATE last_seen=VALUES(last_seen)", deviceID, now)
+
 	// 1. 广播流
 	stream.BroadcastFrame(deviceID, imgData)
 
@@ -145,34 +219,32 @@ func UploadHandler(w http.ResponseWriter, r *http.Request) {
 
 	// 3. 抓拍模式：保存到硬盘和数据库
 	os.MkdirAll("./uploads", 0755)
-	now := time.Now().In(models.CstZone)
 	n := fmt.Sprintf("%s_%s", now.Format("20060102-150405"), "evidence.jpg")
 	ioutil.WriteFile("./uploads/"+n, imgData, 0644)
 	database.DB.Exec("INSERT INTO events (filename, capture_time, device_id) VALUES (?,?,?)", n, now, deviceID)
-	fmt.Fprintf(w, "OK")
 
 	// 🔥 新增：自动触发 AI 分析
-    // 只有非流模式(stream)才分析，避免浪费 Token
-    if mode != "stream" {
-        select {
-        case JobQueue <- AnalysisJob{Filename: n, DeviceID: deviceID}:
-            fmt.Println("✅ 自动推入分析队列:", n)
-        default:
-            fmt.Println("⚠️ 队列已满，跳过自动分析:", n)
-        }
-    }
+	// 只有非流模式(stream)才分析，避免浪费 Token
+	if mode != "stream" {
+		select {
+		case JobQueue <- AnalysisJob{Filename: n, DeviceID: deviceID}:
+			fmt.Println("✅ 自动推入分析队列:", n)
+		default:
+			fmt.Println("⚠️ 队列已满，跳过自动分析:", n)
+		}
+	}
 
-    fmt.Fprintf(w, "OK")
+	fmt.Fprintf(w, "OK")
 }
 
 func EventsAPIHandler(w http.ResponseWriter, r *http.Request) {
-	rows, _ := database.DB.Query("SELECT id, filename, capture_time, IFNULL(ai_analysis, ''), IFNULL(device_id, 'CAM-01') FROM events ORDER BY id DESC LIMIT 50")
+	rows, _ := database.DB.Query("SELECT id, filename, capture_time, IFNULL(ai_analysis, ''), IFNULL(device_id, 'CAM-01'), IFNULL(status, 'open'), IFNULL(tags, '') FROM events ORDER BY id DESC LIMIT 50")
 	defer rows.Close()
 	var events []models.Event
 	for rows.Next() {
 		var e models.Event
 		var t time.Time
-		rows.Scan(&e.ID, &e.Filename, &t, &e.AIAnalysis, &e.DeviceID)
+		rows.Scan(&e.ID, &e.Filename, &t, &e.AIAnalysis, &e.DeviceID, &e.Status, &e.Tags)
 		e.CaptureTime = t.In(models.CstZone).Format("15:04:05")
 		events = append(events, e)
 	}
@@ -183,14 +255,22 @@ func EventsAPIHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func DevicesAPIHandler(w http.ResponseWriter, r *http.Request) {
-	rows, _ := database.DB.Query("SELECT device_id, MAX(capture_time) as last_active, (SELECT filename FROM events e2 WHERE e2.device_id = e1.device_id ORDER BY capture_time DESC LIMIT 1) as last_image FROM events e1 GROUP BY device_id")
+	rows, _ := database.DB.Query("SELECT d.id, d.last_seen, d.enabled, (SELECT filename FROM events e2 WHERE e2.device_id = d.id ORDER BY capture_time DESC LIMIT 1) as last_image FROM devices d ORDER BY d.last_seen DESC")
 	defer rows.Close()
 	var devices []models.DeviceInfo
 	for rows.Next() {
 		var d models.DeviceInfo
-		var t time.Time
-		rows.Scan(&d.ID, &t, &d.LastImage)
-		d.LastActive = t.In(models.CstZone).Format("15:04:05")
+		var t sql.NullTime
+		var lastImage sql.NullString
+		var enabled int
+		rows.Scan(&d.ID, &t, &enabled, &lastImage)
+		if t.Valid {
+			d.LastActive = t.Time.In(models.CstZone).Format("15:04:05")
+		}
+		if lastImage.Valid {
+			d.LastImage = lastImage.String
+		}
+		d.Enabled = enabled == 1
 		devices = append(devices, d)
 	}
 	if devices == nil {
@@ -200,20 +280,38 @@ func DevicesAPIHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func SettingsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "405", 405)
+		return
+	}
+	if !requireCSRF(w, r) {
+		return
+	}
 	var c models.Config
 	json.NewDecoder(r.Body).Decode(&c)
-	config.ConfigMu.Lock()
-	config.AppConfig.AIEndpoint = c.AIEndpoint
-	config.AppConfig.AIKey = c.AIKey
-	config.AppConfig.AIModel = c.AIModel
-	config.SaveConfig()
-	config.ConfigMu.Unlock()
+	config.UpdateConfig(func(cfg *models.Config) {
+		cfg.AIEndpoint = c.AIEndpoint
+		cfg.AIKey = c.AIKey
+		cfg.AIModel = c.AIModel
+		if c.DingWebhook != "" {
+			cfg.DingWebhook = c.DingWebhook
+		}
+		if c.DeviceKey != "" {
+			cfg.DeviceKey = c.DeviceKey
+		}
+		if c.AlertKeywords != "" {
+			cfg.AlertKeywords = c.AlertKeywords
+		}
+	})
 	fmt.Fprint(w, `{"status":"ok"}`)
 }
 
 func DeleteDeviceHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "405", 405)
+		return
+	}
+	if !requireCSRF(w, r) {
 		return
 	}
 	devID := r.URL.Query().Get("device_id")
@@ -225,17 +323,36 @@ func DeleteDeviceHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	rows.Close()
 	database.DB.Exec("DELETE FROM events WHERE device_id=?", devID)
+	database.DB.Exec("DELETE FROM devices WHERE id=?", devID)
 	fmt.Fprintf(w, "OK")
 }
 
 func DeleteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "405", 405)
+		return
+	}
+	if !requireCSRF(w, r) {
+		return
+	}
 	n := r.URL.Query().Get("filename")
+	if !isSafeFilename(n) {
+		http.Error(w, "Invalid filename", 400)
+		return
+	}
 	os.Remove("./uploads/" + n)
 	database.DB.Exec("DELETE FROM events WHERE filename=?", n)
 	fmt.Fprintf(w, "OK")
 }
 
 func AvatarUploadHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "405", 405)
+		return
+	}
+	if !requireCSRF(w, r) {
+		return
+	}
 	r.ParseMultipartForm(10 << 20)
 	f, h, e := r.FormFile("avatar")
 	if e != nil {
@@ -247,28 +364,33 @@ func AvatarUploadHandler(w http.ResponseWriter, r *http.Request) {
 	d, _ := os.Create("./uploads/avatars/" + n)
 	defer d.Close()
 	io.Copy(d, f)
-	config.ConfigMu.Lock()
-	config.AppConfig.Avatar = n
-	config.SaveConfig()
-	config.ConfigMu.Unlock()
+	config.UpdateConfig(func(cfg *models.Config) {
+		cfg.Avatar = n
+	})
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok", "url": "/uploads/avatars/" + n})
 }
 
 func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "405", 405)
+		return
+	}
+	if !requireCSRF(w, r) {
+		return
+	}
 	var d struct {
 		Username string
 		Password string
 	}
 	json.NewDecoder(r.Body).Decode(&d)
-	config.ConfigMu.Lock()
-	if d.Username != "" {
-		config.AppConfig.AdminUser = d.Username
-	}
-	if d.Password != "" {
-		config.AppConfig.AdminPass = d.Password
-	}
-	config.SaveConfig()
-	config.ConfigMu.Unlock()
+	config.UpdateConfig(func(cfg *models.Config) {
+		if d.Username != "" {
+			cfg.AdminUser = d.Username
+		}
+		if d.Password != "" {
+			cfg.AdminPass = d.Password
+		}
+	})
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
@@ -276,7 +398,25 @@ func UpdateProfileHandler(w http.ResponseWriter, r *http.Request) {
 
 func AnalyzeHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	fname := r.URL.Query().Get("filename")
+	if r.Method != "POST" {
+		http.Error(w, "405", 405)
+		return
+	}
+	if !requireCSRF(w, r) {
+		return
+	}
+	var payload struct {
+		Filename string `json:"filename"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&payload)
+	fname := payload.Filename
+	if fname == "" {
+		fname = r.URL.Query().Get("filename")
+	}
+	if !isSafeFilename(fname) {
+		http.Error(w, "Invalid filename", 400)
+		return
+	}
 	
 	// 查一下这个文件属于哪个设备
 	var deviceID string
@@ -296,10 +436,74 @@ func AnalyzeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func EventsUpdateHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "405", 405)
+		return
+	}
+	if !requireCSRF(w, r) {
+		return
+	}
+	var payload struct {
+		Filename string `json:"filename"`
+		Status   string `json:"status"`
+		Tags     string `json:"tags"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Bad Request", 400)
+		return
+	}
+	if !isSafeFilename(payload.Filename) {
+		http.Error(w, "Invalid filename", 400)
+		return
+	}
+	_, _ = database.DB.Exec(
+		"UPDATE events SET status=COALESCE(NULLIF(?, ''), status), tags=COALESCE(NULLIF(?, ''), tags) WHERE filename=?",
+		payload.Status,
+		payload.Tags,
+		payload.Filename,
+	)
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func QueueStatusHandler(w http.ResponseWriter, r *http.Request) {
+	json.NewEncoder(w).Encode(map[string]int{
+		"length":   len(JobQueue),
+		"capacity": cap(JobQueue),
+	})
+}
+
+func HealthHandler(w http.ResponseWriter, r *http.Request) {
+	status := "ok"
+	if err := database.DB.Ping(); err != nil {
+		status = "db_error"
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  status,
+		"uptime":  int(time.Since(serverStart).Seconds()),
+		"queue":   len(JobQueue),
+		"version": "v11.4",
+	})
+}
+
 func checkAndAlert(analysis string, filename string, deviceID string) {
     fmt.Printf("🧐 AI分析结果: %s\n", analysis)
 
-    dangerKeywords := []string{"火", "烟", "倒", "血", "刀", "棍", "入侵", "陌生人", "打架", "攀爬", "求救", "Fire", "Smoke", "Knife", "Blood"}
+	config.ConfigMu.RLock()
+	keywordStr := config.AppConfig.AlertKeywords
+	config.ConfigMu.RUnlock()
+	var dangerKeywords []string
+	if keywordStr != "" {
+		for _, kw := range strings.Split(keywordStr, ",") {
+			trimmed := strings.TrimSpace(kw)
+			if trimmed != "" {
+				dangerKeywords = append(dangerKeywords, trimmed)
+			}
+		}
+	}
+	if len(dangerKeywords) == 0 {
+		dangerKeywords = []string{"火", "烟", "倒", "血", "刀", "棍", "入侵", "陌生人", "打架", "攀爬", "求救", "Fire", "Smoke", "Knife", "Blood"}
+	}
     
     triggered := false
     for _, kw := range dangerKeywords {
@@ -334,41 +538,184 @@ func checkAndAlert(analysis string, filename string, deviceID string) {
 }
 
 func sendDingTalk(content string, filename string, deviceID string) {
+	config.ConfigMu.RLock()
+	webhook := config.AppConfig.DingWebhook
+	config.ConfigMu.RUnlock()
+	if webhook == "" {
+		return
+	}
 	msg := models.DingMsg{MsgType: "markdown"}
-	msg.Markdown.Title = "🚨 鹰眼安全警报"
-	msg.Markdown.Text = fmt.Sprintf("### 🦅 鹰眼系统安全预警\n\n**📷 设备**: %s\n\n**⏰ 时间**: %s\n\n**🤖 AI 分析**: <font color=#FF0000>%s</font>\n\n**📸 证据文件**: %s", deviceID, time.Now().In(models.CstZone).Format("15:04:05"), content, filename)
+	msg.Markdown.Title = "鹰眼安全警报"
+	msg.Markdown.Text = fmt.Sprintf("###鹰眼系统安全预警\n\n**📷 设备**: %s\n\n**时间**: %s\n\n**AI 分析**: <font color=#FF0000>%s</font>\n\n**📸 证据文件**: %s", deviceID, time.Now().In(models.CstZone).Format("15:04:05"), content, filename)
 	payload, _ := json.Marshal(msg)
-	http.Post(config.HardcodedWebhook, "application/json", bytes.NewBuffer(payload))
+	http.Post(webhook, "application/json", bytes.NewBuffer(payload))
 }
 
-// --- 🔥 新增：后台工人，负责一直在队列里拿活干 ---
+func requireDeviceKey(w http.ResponseWriter, r *http.Request) bool {
+	config.ConfigMu.RLock()
+	deviceKey := config.AppConfig.DeviceKey
+	config.ConfigMu.RUnlock()
+	if deviceKey == "" {
+		return true
+	}
+	provided := r.Header.Get("X-Device-Key")
+	if provided == "" {
+		provided = r.URL.Query().Get("device_key")
+	}
+	if provided != deviceKey {
+		http.Error(w, "Unauthorized", 401)
+		return false
+	}
+	return true
+}
+
+func getClientIP(r *http.Request) string {
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func newRateLimiter(limit int, window time.Duration) *rateLimiter {
+	return &rateLimiter{limit: limit, window: window, items: map[string]*rateWindow{}}
+}
+
+func (rl *rateLimiter) Allow(key string) bool {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	win, ok := rl.items[key]
+	if !ok || time.Since(win.start) > rl.window {
+		rl.items[key] = &rateWindow{start: time.Now(), count: 1}
+		return true
+	}
+	if win.count >= rl.limit {
+		return false
+	}
+	win.count++
+	return true
+}
+
+func isSafeFilename(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.Contains(name, "..") {
+		return false
+	}
+	return filepath.Base(name) == name
+}
+
+func getSession(r *http.Request) (sessionInfo, bool) {
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil || c.Value == "" {
+		return sessionInfo{}, false
+	}
+	sessionMu.RLock()
+	s, ok := sessions[c.Value]
+	sessionMu.RUnlock()
+	if !ok || time.Now().After(s.Expires) {
+		return sessionInfo{}, false
+	}
+	return s, true
+}
+
+func requireCSRF(w http.ResponseWriter, r *http.Request) bool {
+	session, ok := getSession(r)
+	if !ok {
+		http.Error(w, "Unauthorized", 401)
+		return false
+	}
+	if r.Header.Get("X-CSRF-Token") != session.CSRF {
+		http.Error(w, "CSRF invalid", 403)
+		return false
+	}
+	return true
+}
+
+func setSessionCookies(w http.ResponseWriter, r *http.Request, sessionToken string, csrfToken string) {
+	secure := r.TLS != nil
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    sessionToken,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+		MaxAge:   int(sessionTTL.Seconds()),
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    csrfToken,
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+		MaxAge:   int(sessionTTL.Seconds()),
+	})
+}
+
+func clearSessionCookies(w http.ResponseWriter, r *http.Request) {
+	secure := r.TLS != nil
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+		MaxAge:   -1,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     csrfCookieName,
+		Value:    "",
+		Path:     "/",
+		HttpOnly: false,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   secure,
+		MaxAge:   -1,
+	})
+}
+
+func newToken(size int) string {
+	b := make([]byte, size)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+
 func StartWorker() {
-	fmt.Println("👷 AI 分析工人已上班 (Worker Started)")
+	fmt.Println("AI 分析启动 (Worker Started)")
 	for job := range JobQueue {
-		// 收到任务，开始干活
-		fmt.Printf("📥 正在处理任务: %s (设备: %s)\n", job.Filename, job.DeviceID)
+		fmt.Printf("正在处理任务: %s (设备: %s)\n", job.Filename, job.DeviceID)
 		performAnalysis(job.Filename, job.DeviceID)
 	}
 }
 
-// --- 🔥 新增：核心 AI 逻辑 (从 AnalyzeHandler 提取出来的) ---
+//核心 AI 逻辑 
 func performAnalysis(filename string, deviceID string) {
-	// 1. 读取文件
+	//读取文件
 	imgBytes, err := ioutil.ReadFile(filepath.Join("./uploads", filename))
 	if err != nil {
-		fmt.Println("❌ 文件读取失败:", err)
+		fmt.Println("文件读取失败:", err)
 		return
 	}
 	b64 := base64.StdEncoding.EncodeToString(imgBytes)
 
-	// 2. 准备配置
+	//准备配置
 	config.ConfigMu.RLock()
 	ep := config.AppConfig.AIEndpoint
 	key := config.AppConfig.AIKey
 	model := config.AppConfig.AIModel
 	config.ConfigMu.RUnlock()
 
-	// 3. 构造请求 (与原先相同)
+	//构造请求
 	type Msg struct {
 		Role    string      `json:"role"`
 		Content []interface{} `json:"content"`
@@ -399,12 +746,12 @@ func performAnalysis(filename string, deviceID string) {
 	client := &http.Client{Timeout: 60 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		fmt.Println("❌ AI 请求失败:", err)
+		fmt.Println("AI 请求失败:", err)
 		return
 	}
 	defer resp.Body.Close()
 
-	// 4. 解析结果
+	//解析结果
 	body, _ := ioutil.ReadAll(resp.Body)
 	var apiResp struct {
 		Choices []struct {
@@ -414,13 +761,13 @@ func performAnalysis(filename string, deviceID string) {
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(body, &apiResp); err != nil || len(apiResp.Choices) == 0 {
-		fmt.Println("❌ AI 无响应或解析失败")
+		fmt.Println("AI 无响应或解析失败")
 		return
 	}
 	ans := apiResp.Choices[0].Message.Content
 
-	// 5. 后续处理 (存库 + 报警)
-	fmt.Printf("🤖 AI 分析完成: %s\n", ans)
+	// 后续处理
+	fmt.Printf(" AI 分析完成: %s\n", ans)
 	database.DB.Exec("UPDATE events SET ai_analysis = ? WHERE filename = ?", ans, filename)
-	checkAndAlert(ans, filename, deviceID) // 复用你原有的报警函数
+	checkAndAlert(ans, filename, deviceID)
 }
