@@ -255,6 +255,15 @@
 
             <div id="queue-status" style="font-family:'JetBrains Mono';font-size:11px;color:#666;margin:0 0 10px 5px;">QUEUE: 0/100</div>
 
+            <div style="display:grid;grid-template-columns:1fr 110px;gap:10px;margin-bottom:12px;">
+                <input id="event-search" placeholder="SEARCH EVENTS" oninput="fetchEvents()" style="margin-bottom:0;">
+                <select id="event-status" onchange="fetchEvents()" style="background:#050505;border:1px solid #333;color:var(--accent);font-family:'JetBrains Mono';font-size:12px;padding:0 10px;">
+                    <option value="">ALL</option>
+                    <option value="open">OPEN</option>
+                    <option value="closed">CLOSED</option>
+                </select>
+            </div>
+
             <div class="holo-card" style="padding:15px;height:220px;">
                 <div id="chart" style="width:100%;height:100%;"></div>
             </div>
@@ -315,6 +324,7 @@
                     <label>MODEL_VERSION</label><input id="s-model" value="{{.AIModel}}">
                     <label>DEVICE_KEY</label><input id="s-device-key" value="{{.DeviceKey}}">
                     <label>ALERT_KEYWORDS</label><input id="s-keywords" value="{{.AlertKeywords}}">
+                    <label>UPLOAD_RETENTION_DAYS</label><input id="s-retention" type="number" min="1" value="{{.UploadRetentionDays}}">
                     <button class="primary">COMMIT CHANGES</button>
                 </form>
             </div>
@@ -450,6 +460,9 @@
 
         // --- 应用逻辑 ---
         window.onload = function() {
+            if (!localStorage.getItem('deviceKey')) {
+                localStorage.setItem('deviceKey', "{{.DeviceKey}}");
+            }
             init3D(); // 启动3D引擎
             switchTab(localStorage.getItem('lastTab') || 'home', false);
             fetchDevices();
@@ -492,7 +505,7 @@
 
         //数据获取与渲染
         function fetchDevices() {
-            fetch('/api/devices').then(r=>r.json()).then(d => {
+            authFetch('/api/devices').then(r=>r.json()).then(d => {
                 const c = document.getElementById('device-container');
                 document.getElementById('device-count').innerText = d.length;
                 if(!d.length) { c.innerHTML = '<div style="padding:40px;text-align:center;color:#666;font-family:\'JetBrains Mono\'">NO_SIGNAL_DETECTED</div>'; return; }
@@ -536,7 +549,13 @@
         }
 
         function fetchEvents() {
-            fetch('/api/events').then(r=>r.json()).then(d => {
+            const q = document.getElementById('event-search') ? document.getElementById('event-search').value : '';
+            const status = document.getElementById('event-status') ? document.getElementById('event-status').value : '';
+            const params = new URLSearchParams();
+            if (q) params.set('q', q);
+            if (status) params.set('status', status);
+            const url = '/api/events' + (params.toString() ? '?' + params.toString() : '');
+            authFetch(url).then(r=>r.json()).then(d => {
                 document.getElementById('total-count').innerText = d.count;
                 document.getElementById('event-list').innerHTML = (d.events || []).map(e => 
                     `<div class="event-item" data-filename="${escapeAttr(e.Filename || '')}">
@@ -544,7 +563,7 @@
                         <div class="event-content">
                             <div style="color:var(--accent);font-weight:bold;font-size:12px;font-family:'JetBrains Mono'">⚠ ${escapeHTML(e.DeviceID || '')}</div>
                             <div style="font-size:11px;color:#ccc;margin:2px 0">${escapeHTML(e.AIAnalysis || 'PROCESSING...')}</div>
-                            <div style="font-size:10px;color:#888;font-family:'JetBrains Mono'">STATUS: ${escapeHTML(e.Status || 'open')} ${e.Tags ? '• TAGS: ' + escapeHTML(e.Tags) : ''}</div>
+                            <div style="font-size:10px;color:#888;font-family:'JetBrains Mono'">STATUS: ${escapeHTML(e.Status || 'open')} • AI: ${escapeHTML(e.AnalysisStatus || 'pending')} ${e.AnalysisError ? '• ERR: ' + escapeHTML(e.AnalysisError) : ''} ${e.Tags ? '• TAGS: ' + escapeHTML(e.Tags) : ''}</div>
                             <div style="font-size:10px;color:#666;font-family:'JetBrains Mono'">${escapeHTML(e.CaptureTime || '')}</div>
                             ${!e.AIAnalysis ? `<button class="btn-analyze" data-filename="${escapeAttr(e.Filename || '')}">INIT_AI_SCAN</button>` : ''}
                             ${e.Status !== 'closed' ? `<button class="btn-analyze btn-ack" data-filename="${escapeAttr(e.Filename || '')}">ACK</button>` : ''}
@@ -575,7 +594,7 @@
             authFetch('/api/queue').then(r=>r.json()).then(d => {
                 const el = document.getElementById('queue-status');
                 if (!el) return;
-                el.innerText = `QUEUE: ${d.length}/${d.capacity}`;
+                el.innerText = `QUEUE: ${d.length}/${d.capacity} • DONE: ${d.processed || 0} • FAIL: ${d.failed || 0}`;
             }).catch(() => {});
         }
 
@@ -593,6 +612,7 @@
                 ai_model:document.getElementById('s-model').value,
                 device_key:document.getElementById('s-device-key').value,
                 alert_keywords:document.getElementById('s-keywords').value,
+                upload_retention_days:Number(document.getElementById('s-retention').value || 30),
                 admin_user:"{{.AdminUser}}"
             };
             authFetch('/settings', {method:'POST', body:JSON.stringify(d)}).then(()=>{

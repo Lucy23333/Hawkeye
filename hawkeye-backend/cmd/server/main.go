@@ -5,6 +5,7 @@ import (
 	"hawkeye/internal/config"
 	"hawkeye/internal/database"
 	"hawkeye/internal/handlers"
+	"hawkeye/internal/storage"
 	"hawkeye/web"
 	"log"
 	"net/http"
@@ -12,18 +13,21 @@ import (
 	"time"
 )
 
-
 func main() {
 	// 1. 初始化
 	config.InitConfig()
-	os.MkdirAll("./uploads/avatars", 0755)
+	if err := storage.EnsureUploadDirs(); err != nil {
+		log.Fatal(err)
+	}
 	database.InitDB()
 
 	// 2. 注入模板 (使用 web 包里的 Content)
-	handlers.SetTemplates(web.Content) 
+	handlers.SetTemplates(web.Content)
 
 	// 启动后台 Worker 协程
 	go handlers.StartWorker()
+	go handlers.StartRetentionWorker()
+	handlers.RequeuePendingAnalyses()
 
 	// 3. 注册路由
 	http.HandleFunc("/", handlers.SplashHandler)
@@ -47,14 +51,18 @@ func main() {
 	http.HandleFunc("/delete_device", handlers.AuthMiddleware(handlers.DeleteDeviceHandler))
 	http.HandleFunc("/analyze", handlers.AuthMiddleware(handlers.AnalyzeHandler))
 	http.HandleFunc("/delete", handlers.AuthMiddleware(handlers.DeleteHandler))
-	
+
 	http.HandleFunc("/upload", handlers.UploadHandler)
-	
+
 	http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir("./uploads"))))
 
-	fmt.Println("鹰眼 已启动 http://localhost:8080")
+	addr := os.Getenv("HAWKEYE_ADDR")
+	if addr == "" {
+		addr = ":8080"
+	}
+	fmt.Println("鹰眼 已启动 http://localhost" + addr)
 	srv := &http.Server{
-		Addr:              ":8080",
+		Addr:              addr,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      60 * time.Second,

@@ -1,0 +1,35 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: hawkeye-db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: hawkeye
+      MYSQL_USER: hawkeye
+      MYSQL_PASSWORD: hawkeye
+      MYSQL_ROOT_PASSWORD: root
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: hawkeye-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./uploads:/app/uploads
+      - ./config.json:/app/config.json
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db-data:

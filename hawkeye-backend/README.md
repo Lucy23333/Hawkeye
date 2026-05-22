@@ -58,7 +58,16 @@
 ### 1. 环境准备
 确保 Ubuntu 服务器已安装 Docker 和 Go 环境。
 
-### 2. 启动数据库 (MySQL)
+### 2. Docker Compose 一键启动
+```bash
+cp .env.example .env
+# 编辑 .env，至少修改 ADMIN_PASS、DEVICE_KEY、AI_KEY
+docker compose up -d --build
+```
+
+服务默认暴露在 `http://localhost:8080`。上传图片会写入 `./uploads`，MySQL 数据会写入 Docker volume `db-data`。
+
+### 3. 手动启动数据库 (MySQL)
 ```bash
 # 启动 Docker 容器
 sudo docker start hawkeye-db
@@ -71,7 +80,7 @@ sudo docker exec -it hawkeye-db mysql -u root -proot -e "TRUNCATE TABLE hawkeye.
 cd ~/hawkeye-backend
 
 # 启动主程序
-go run main.go
+go run ./cmd/server
 
 开启公网访问 (cpolar)
 # 获取公网链接
@@ -89,11 +98,20 @@ AI Endpoint: https://api.siliconflow.cn/v1/chat/completions (硅基流动)
 
 AI Model: Qwen/Qwen2-VL-72B-Instruct
 
-Admin: 默认账号密码均为 admin（建议首次登录后修改）
+Admin: 默认账号为 admin，密码通过 `ADMIN_PASS` 或首次配置设置。服务会自动哈希保存密码，不再建议使用默认弱口令。
 
 也可以使用环境变量覆盖配置（避免明文落盘密钥）：
 
-AI_ENDPOINT, AI_KEY, AI_MODEL, ADMIN_USER, ADMIN_PASS, DING_WEBHOOK, DEVICE_KEY, ALERT_KEYWORDS
+AI_ENDPOINT, AI_KEY, AI_MODEL, ADMIN_USER, ADMIN_PASS, DING_WEBHOOK, DEVICE_KEY, ALERT_KEYWORDS, HAWKEYE_DSN, HAWKEYE_ADDR, UPLOAD_RETENTION_DAYS
+
+## 运维与安全增强
+
+* `DEVICE_KEY` 现在是设备上传、实时流和 SSE 订阅的强制凭据；未配置时系统会生成随机值并写入 `config.json`。
+* 上传接口会校验设备 ID、文件大小和图片 MIME，并使用纳秒时间戳加随机后缀避免文件覆盖。
+* AI 分析任务会记录 `queued / processing / done / failed` 状态、失败原因和尝试次数，服务重启后会重排未完成任务。
+* `/api/queue` 返回队列长度、容量、成功数和失败数；`/health` 返回 DB 状态、运行时间和队列长度。
+* `UPLOAD_RETENTION_DAYS` 控制历史事件和图片保留天数，默认 30 天。
+* `migrations/001_init.sql` 提供正式建表结构；运行时代码也会兼容旧库自动补列。
 
 
 未来规划 (Roadmap)
