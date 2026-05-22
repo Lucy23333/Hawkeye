@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>HAWKEYE | 鹰眼系统</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        /* --- 核心变量 --- */
+        :root { 
+            --bg: #030304; 
+            --panel: rgba(10, 12, 16, 0.65); 
+            --accent: #00f3ff; 
+            --accent-glow: rgba(0, 243, 255, 0.4);
+            --danger: #ff0055; 
+            --text-main: #e0f7fa;
+            --text-sub: #8899a6;
+            --glass-border: rgba(255, 255, 255, 0.08);
+        }
+        
+        body { 
+            margin: 0; background: var(--bg); color: var(--text-main); 
+            font-family: 'Rajdhani', sans-serif;
+            overflow: hidden; height: 100vh; display: flex; flex-direction: column;
+            user-select: none;
+        }
+
+        /* --- 3D 背景容器 --- */
+        #webgl-container { 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            z-index: -1; pointer-events: none;
+        }
+        
+        /* 扫描线纹理叠加 - 增加显示器真实感 */
+        .scanlines {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 900; pointer-events: none;
+            background: linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.1) 50%), linear-gradient(90deg, rgba(255, 0, 0, 0.06), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.06));
+            background-size: 100% 2px, 3px 100%;
+            opacity: 0.6;
+        }
+        
+        /* 暗角晕影 - 聚焦视线 */
+        .vignette {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 800; pointer-events: none;
+            background: radial-gradient(circle at 50% 50%, transparent 60%, rgba(0,0,0,0.9) 100%);
+        }
+
+        /* 滚动条隐藏但保留功能 */
+        ::-webkit-scrollbar { width: 0px; }
+        
+        .view-container { 
+            flex: 1; overflow-y: auto; position: relative; scroll-behavior: smooth; 
+            padding-bottom: 90px; z-index: 10;
+        }
+        .view { display: none; padding: 20px; animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .view.active { display: block; }
+        
+        /* --- 头部设计 --- */
+        .header { 
+            padding: 15px 24px; display: flex; justify-content: space-between; align-items: center; 
+            background: rgba(3, 3, 4, 0.2); backdrop-filter: blur(5px);
+            position: sticky; top: 0; z-index: 50; 
+            border-bottom: 1px solid rgba(0, 243, 255, 0.05);
+        }
+        .logo-box h1 { 
+            margin: 0; font-family: 'JetBrains Mono', monospace; font-size: 16px; 
+            letter-spacing: -1px; color: #fff; text-shadow: 0 0 10px var(--accent-glow);
+            display: flex; align-items: center; gap: 8px;
+        }
+        .pro-tag { 
+            font-size: 9px; background: var(--accent); color: #000; padding: 1px 4px; 
+            border-radius: 2px; font-weight: 800; letter-spacing: 0;
+        }
+        .status-badge { 
+            font-size: 11px; color: var(--accent); font-family: 'JetBrains Mono'; 
+            display: flex; align-items: center; gap: 8px; 
+            background: rgba(0, 243, 255, 0.05); padding: 4px 12px; border-radius: 20px;
+            border: 1px solid rgba(0, 243, 255, 0.2);
+        }
+        .status-dot { width: 6px; height: 6px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 8px var(--accent); animation: blink 2s infinite; }
+
+        /*全息卡片*/
+        .holo-card { 
+            background: var(--panel); 
+            border: 1px solid var(--glass-border);
+            border-radius: 4px;
+            position: relative; overflow: hidden;
+            backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+            box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+            transition: transform 0.3s, border-color 0.3s;
+            margin-bottom: 20px;
+        }
+        /* 卡片光泽扫光效果 */
+        .holo-card::before {
+            content: ''; position: absolute; top: 0; left: -100%; width: 50%; height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.05), transparent);
+            transform: skewX(-25deg); transition: 0.5s; pointer-events: none;
+        }
+        .holo-card:hover::before { left: 150%; transition: 0.7s; }
+        .holo-card:hover { 
+            border-color: rgba(0, 243, 255, 0.3); 
+            transform: translateY(-2px); 
+            box-shadow: 0 15px 50px rgba(0, 243, 255, 0.05);
+        }
+
+        /* 装饰性边角 (Corner Accents) */
+        .corner-tl { position: absolute; top: 0; left: 0; width: 6px; height: 6px; border-top: 2px solid var(--accent); border-left: 2px solid var(--accent); opacity: 0.5; }
+        .corner-br { position: absolute; bottom: 0; right: 0; width: 6px; height: 6px; border-bottom: 2px solid var(--accent); border-right: 2px solid var(--accent); opacity: 0.5; }
+
+        /* 设备预览图 */
+        .device-preview { height: 180px; background: #000; position: relative; overflow: hidden; }
+        .device-preview img { width: 100%; height: 100%; object-fit: cover; opacity: 0.7; transition: opacity 0.3s; mix-blend-mode: luminosity; } 
+        .holo-card:hover .device-preview img { opacity: 1; mix-blend-mode: normal; }
+        .live-tag { position: absolute; top: 10px; right: 10px; background: var(--danger); color: #fff; padding: 2px 6px; font-size: 10px; font-weight: bold; letter-spacing: 1px; box-shadow: 0 0 15px var(--danger); z-index: 2; }
+        .device-id-overlay { position: absolute; bottom: 10px; left: 10px; font-family: 'JetBrains Mono'; font-size: 24px; font-weight: bold; color: rgba(255,255,255,0.1); pointer-events: none; }
+        
+        .device-info { padding: 15px; border-top: 1px solid rgba(255,255,255,0.05); display: flex; justify-content: space-between; align-items: center; }
+        .device-name { font-size: 16px; font-weight: 700; color: #fff; letter-spacing: 0.5px; }
+        .device-meta { font-size: 10px; color: var(--text-sub); font-family: 'JetBrains Mono'; margin-top: 2px; }
+
+        /* 统计数据 */
+        .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }
+        .stat-box { 
+            background: linear-gradient(135deg, rgba(255,255,255,0.03), rgba(0,0,0,0.2)); 
+            padding: 20px; border: 1px solid var(--glass-border); position: relative; 
+        }
+        .stat-num { font-size: 32px; font-weight: 700; color: #fff; font-family: 'Rajdhani'; line-height: 1; text-shadow: 0 0 20px rgba(0,243,255,0.2); }
+        .stat-label { font-size: 10px; color: var(--accent); text-transform: uppercase; letter-spacing: 2px; margin-top: 8px; opacity: 0.8; }
+
+        /* 告警列表 */
+        .event-item { 
+            display: flex; gap: 15px; padding: 12px; margin-bottom: 8px; 
+            background: rgba(0,0,0,0.3); border-left: 2px solid #333; transition: 0.2s;
+        }
+        .event-item:hover { background: rgba(0, 243, 255, 0.05); border-left-color: var(--accent); }
+        .event-img { width: 80px; height: 50px; background: #111; border: 1px solid #333; object-fit: cover; }
+        .event-content { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+        .btn-analyze { 
+            background: transparent; border: 1px solid var(--accent); color: var(--accent); 
+            font-size: 10px; padding: 4px 10px; margin-top: 6px; align-self: flex-start; 
+            cursor: pointer; font-family: 'JetBrains Mono'; transition: 0.2s;
+        }
+        .btn-analyze:hover { background: var(--accent); color: #000; box-shadow: 0 0 15px var(--accent); }
+
+        /* 底部导航 - 悬浮胶囊 */
+        .bottom-nav-container { position: fixed; bottom: 20px; width: 100%; display: flex; justify-content: center; z-index: 100; pointer-events: none; }
+        .bottom-nav { 
+            background: rgba(10, 12, 16, 0.85); backdrop-filter: blur(16px); 
+            border: 1px solid rgba(255,255,255,0.1); border-radius: 40px; 
+            padding: 0 20px; height: 60px; display: flex; gap: 30px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5); pointer-events: auto;
+        }
+        .nav-item { 
+            display: flex; flex-direction: column; justify-content: center; align-items: center; 
+            width: 50px; cursor: pointer; color: #555; position: relative; transition: 0.3s;
+        }
+        .nav-item.active { color: var(--accent); }
+        .nav-item.active::after { 
+            content: ''; position: absolute; bottom: 5px; width: 4px; height: 4px; 
+            background: var(--accent); border-radius: 50%; box-shadow: 0 0 8px var(--accent);
+        }
+        .nav-icon { font-size: 20px; margin-bottom: 2px; }
+        .nav-label { font-size: 9px; font-weight: 700; font-family: 'Rajdhani'; letter-spacing: 1px; }
+
+        /* 弹窗系统 */
+        .overlay-backdrop { 
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%; 
+            background: rgba(0,0,0,0.8); backdrop-filter: blur(8px); z-index: 950;
+            display: none; align-items: center; justify-content: center; opacity: 0; transition: opacity 0.3s;
+        }
+        .overlay-window {
+            width: 90%; max-width: 400px; background: #0a0c10; 
+            border: 1px solid rgba(0, 243, 255, 0.2); box-shadow: 0 0 50px rgba(0,0,0,0.8);
+            transform: scale(0.9); transition: transform 0.3s; position: relative;
+        }
+        .overlay-backdrop.show { opacity: 1; }
+        .overlay-backdrop.show .overlay-window { transform: scale(1); }
+        
+        .win-header { 
+            padding: 15px 20px; background: rgba(0, 243, 255, 0.05); border-bottom: 1px solid rgba(255,255,255,0.05);
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .win-title { font-family: 'Rajdhani'; font-weight: 700; color: #fff; letter-spacing: 1px; }
+        .win-close { cursor: pointer; color: var(--danger); font-family: 'JetBrains Mono'; font-weight: bold; }
+        .win-body { padding: 25px; }
+
+        input { 
+            width: 100%; background: #050505; border: 1px solid #333; color: var(--accent);
+            padding: 12px; font-family: 'JetBrains Mono'; font-size: 13px; outline: none; box-sizing: border-box;
+            transition: 0.3s; margin-bottom: 15px;
+        }
+        input:focus { border-color: var(--accent); box-shadow: 0 0 15px rgba(0, 243, 255, 0.1); }
+        label { display: block; color: #666; font-size: 10px; margin-bottom: 5px; font-family: 'JetBrains Mono'; }
+        
+        button.primary { 
+            width: 100%; padding: 14px; background: var(--accent); color: #000; font-weight: 800; border: none;
+            font-family: 'Rajdhani'; letter-spacing: 2px; cursor: pointer; transition: 0.3s;
+        }
+        button.primary:hover { background: #fff; box-shadow: 0 0 30px var(--accent); }
+
+        @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div id="webgl-container"></div>
+    <div class="scanlines"></div>
+    <div class="vignette"></div>
+
+    <div id="toast" style="position:fixed;top:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.8);border:1px solid var(--accent);color:var(--accent);padding:8px 20px;font-size:12px;z-index:1000;display:none;font-family:'JetBrains Mono'">ACTION_COMPLETED</div>
+    <input type="file" id="avatarInput" style="display: none" accept="image/*" onchange="handleAvatarUpload(this)">
+
+    <div class="header">
+        <div class="logo-box">
+            <h1>HAWKEYE <span class="pro-tag">PRO</span></h1>
+        </div>
+        <div class="status-badge">
+            <div class="status-dot"></div> ONLINE
+        </div>
+    </div>
+
+    <div class="view-container">
+        
+        <div id="view-home" class="view active">
+            <div style="display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:20px;padding:0 5px;">
+                <div>
+                    <div style="font-size:10px;color:#666;font-family:'JetBrains Mono'">SECTOR_01</div>
+                    <div style="font-size:18px;font-weight:700;color:#fff;">NODES</div>
+                </div>
+                <div style="font-size:11px;color:var(--accent);cursor:pointer;border-bottom:1px solid var(--accent)" onclick="promptNewDevice()">
+                    [+] NEW_CONN
+                </div>
+            </div>
+            
+            <div id="device-container">
+                <div style="text-align:center;padding:50px;color:#444;font-family:'JetBrains Mono'">INITIALIZING SCAN...</div>
+            </div>
+        </div>
+
+        <div id="view-dash" class="view">
+            <div class="stat-grid">
+                <div class="stat-box">
+                    <div class="stat-num" id="total-count" style="color:var(--danger)">0</div>
+                    <div class="stat-label">Total Threats</div>
+                    <div class="corner-tl"></div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-num" id="device-count" style="color:var(--accent)">0</div>
+                    <div class="stat-label">Active Cams</div>
+                    <div class="corner-br"></div>
+                </div>
+            </div>
+
+            <div id="queue-status" style="font-family:'JetBrains Mono';font-size:11px;color:#666;margin:0 0 10px 5px;">QUEUE: 0/100</div>
+
+            <div style="display:grid;grid-template-columns:1fr 110px;gap:10px;margin-bottom:12px;">
+                <input id="event-search" placeholder="SEARCH EVENTS" oninput="fetchEvents()" style="margin-bottom:0;">
+                <select id="event-status" onchange="fetchEvents()" style="background:#050505;border:1px solid #333;color:var(--accent);font-family:'JetBrains Mono';font-size:12px;padding:0 10px;">
+                    <option value="">ALL</option>
+                    <option value="open">OPEN</option>
+                    <option value="closed">CLOSED</option>
+                </select>
+            </div>
+
+            <div class="holo-card" style="padding:15px;height:220px;">
+                <div id="chart" style="width:100%;height:100%;"></div>
+            </div>
+
+            <div style="margin-top:30px;margin-bottom:10px;font-family:'JetBrains Mono';font-size:11px;color:#666;display:flex;justify-content:space-between;">
+                <span>EVENT_LOG</span>
+                <span>REALTIME_STREAM</span>
+            </div>
+            <div id="event-list"></div>
+        </div>
+
+        <div id="view-me" class="view">
+            <div style="text-align:center;margin:40px 0;">
+                <div style="position:relative;display:inline-block;cursor:pointer" onclick="document.getElementById('avatarInput').click()">
+                    <img src="{{if .Avatar}}/uploads/avatars/{{.Avatar}}{{else}}/uploads/avatars/Chihaya_Anon.jpg{{end}}" id="user-avatar" style="width:100px;height:100px;border-radius:50%;object-fit:cover;border:2px solid var(--accent);padding:4px;background:rgba(0,0,0,0.5);">
+                    <div style="position:absolute;bottom:0;right:0;background:var(--accent);color:#000;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:16px">+</div>
+                </div>
+                <h2 id="disp-username" style="margin:15px 0 5px;font-family:'Rajdhani';letter-spacing:1px;font-size:24px;">{{.AdminUser}}</h2>
+                <div style="color:#666;font-family:'JetBrains Mono';font-size:11px;">ID: 89757 • LEVEL 4 ADMINISTRATOR</div>
+            </div>
+
+            <div class="holo-card" style="padding:0;">
+                <div onclick="openProfileEdit()" style="padding:20px;border-bottom:1px solid rgba(255,255,255,0.05);cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:14px;">IDENTITY CONFIG</span> <span style="color:var(--accent)">></span>
+                </div>
+                <div onclick="openSettings()" style="padding:20px;border-bottom:1px solid rgba(255,255,255,0.05);cursor:pointer;display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:14px;">SYSTEM PARAMS</span> <span style="color:var(--accent)">></span>
+                </div>
+                <div onclick="location.href='/logout'" style="padding:20px;cursor:pointer;color:var(--danger);display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:14px;font-weight:bold">DISCONNECT</span> <span>[X]</span>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="bottom-nav-container">
+        <div class="bottom-nav">
+            <div class="nav-item active" id="nav-home" onclick="switchTab('home')">
+                <div class="nav-icon">⚆</div><div class="nav-label">NODES</div>
+            </div>
+            <div class="nav-item" id="nav-dash" onclick="switchTab('dash')">
+                <div class="nav-icon">⚡</div><div class="nav-label">INTEL</div>
+            </div>
+            <div class="nav-item" id="nav-me" onclick="switchTab('me')">
+                <div class="nav-icon">⌬</div><div class="nav-label">USER</div>
+            </div>
+        </div>
+    </div>
+
+    <div id="settings-overlay" class="overlay-backdrop">
+        <div class="overlay-window">
+            <div class="win-header"><span class="win-title">SYSTEM_CONFIG</span><span class="win-close" onclick="closeSettings()">[ESC]</span></div>
+            <div class="win-body">
+                <form onsubmit="event.preventDefault(); saveConfig()">
+                    <label>AI_ENDPOINT</label><input id="s-ep" value="{{.AIEndpoint}}">
+                    <label>ACCESS_TOKEN</label><input id="s-key" type="password" value="{{.AIKey}}">
+                    <label>MODEL_VERSION</label><input id="s-model" value="{{.AIModel}}">
+                    <label>DEVICE_KEY</label><input id="s-device-key" value="{{.DeviceKey}}">
+                    <label>ALERT_KEYWORDS</label><input id="s-keywords" value="{{.AlertKeywords}}">
+                    <label>UPLOAD_RETENTION_DAYS</label><input id="s-retention" type="number" min="1" value="{{.UploadRetentionDays}}">
+                    <button class="primary">COMMIT CHANGES</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <div id="profile-overlay" class="overlay-backdrop">
+        <div class="overlay-window">
+            <div class="win-header"><span class="win-title">IDENTITY_MGMT</span><span class="win-close" onclick="closeProfileEdit()">[ESC]</span></div>
+            <div class="win-body">
+                <form onsubmit="event.preventDefault(); saveProfile()">
+                    <label>ALIAS</label><input id="p-user" value="{{.AdminUser}}">
+                    <label>PASSPHRASE</label><input id="p-pass" type="password" placeholder="Unchanged">
+                    <button class="primary">UPDATE RECORD</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div id="hud-overlay" style="position:fixed;top:0;left:0;width:100%;height:100%;background:#000;z-index:2000;display:none;">
+        <div onclick="closeHUD()" style="position:absolute;top:30px;left:20px;z-index:2001;color:#fff;background:rgba(0,0,0,0.6);padding:8px 16px;border-radius:4px;cursor:pointer;border:1px solid #333;font-family:'JetBrains Mono'"> < BACK </div>
+        <iframe id="hud-frame" style="width:100%;height:100%;border:none;"></iframe>
+    </div>
+
+    <script>
+        function getCookie(name) {
+            const parts = (`; ${document.cookie}`).split(`; ${name}=`);
+            if (parts.length === 2) return parts.pop().split(';').shift();
+            return '';
+        }
+
+        function getDeviceKey() {
+            return localStorage.getItem('deviceKey') || '';
+        }
+
+        function authFetch(url, options = {}) {
+            const csrf = getCookie('csrf');
+            const headers = Object.assign({}, options.headers || {});
+            if (csrf) headers['X-CSRF-Token'] = csrf;
+            return fetch(url, Object.assign({}, options, { headers }));
+        }
+
+        function escapeHTML(value) {
+            return String(value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function escapeAttr(value) {
+            return escapeHTML(value).replace(/`/g, '&#96;');
+        }
+        // --- Three.js 3D 地球背景核心逻辑 ---
+        function init3D() {
+            const container = document.getElementById('webgl-container');
+            const scene = new THREE.Scene();
+            // 雾效增加深邃感
+            scene.fog = new THREE.FogExp2(0x030304, 0.002);
+            
+            const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            // 1. 线框地球
+            const geometry = new THREE.IcosahedronGeometry(10, 2);
+            const material = new THREE.MeshBasicMaterial({ 
+                color: 0x222222, 
+                wireframe: true, 
+                transparent: true, 
+                opacity: 0.3 
+            });
+            const globe = new THREE.Mesh(geometry, material);
+            scene.add(globe);
+
+            // 2. 漂浮的监控节点 (卫星)
+            const particlesGeometry = new THREE.BufferGeometry();
+            const particlesCount = 150;
+            const posArray = new Float32Array(particlesCount * 3);
+            
+            for(let i = 0; i < particlesCount * 3; i++) {
+                posArray[i] = (Math.random() - 0.5) * 35; // 分布范围
+            }
+            particlesGeometry.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+            const particlesMaterial = new THREE.PointsMaterial({
+                size: 0.08,
+                color: 0x00f3ff,
+                transparent: true,
+                opacity: 0.8,
+            });
+            const particlesMesh = new THREE.Points(particlesGeometry, particlesMaterial);
+            scene.add(particlesMesh);
+
+            camera.position.z = 18;
+
+            // 动画循环
+            let mouseX = 0;
+            let mouseY = 0;
+            
+            // 简单的鼠标视差效果
+            document.addEventListener('mousemove', (e) => {
+                mouseX = (e.clientX - window.innerWidth / 2) * 0.001;
+                mouseY = (e.clientY - window.innerHeight / 2) * 0.001;
+            });
+
+            function animate() {
+                requestAnimationFrame(animate);
+                
+                globe.rotation.y += 0.001; // 地球自转
+                globe.rotation.x += 0.0005;
+
+                particlesMesh.rotation.y += 0.0005; // 粒子层反向微转
+                
+                // 视差跟随
+                camera.position.x += (mouseX * 5 - camera.position.x) * 0.05;
+                camera.position.y += (-mouseY * 5 - camera.position.y) * 0.05;
+                camera.lookAt(scene.position);
+
+                renderer.render(scene, camera);
+            }
+            animate();
+            
+            // 窗口调整
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+        }
+
+        // --- 应用逻辑 ---
+        window.onload = function() {
+            if (!localStorage.getItem('deviceKey')) {
+                localStorage.setItem('deviceKey', "{{.DeviceKey}}");
+            }
+            init3D(); // 启动3D引擎
+            switchTab(localStorage.getItem('lastTab') || 'home', false);
+            fetchDevices();
+        };
+
+        function playAudio(type) {
+            // const audio = new Audio('/sounds/click.mp3'); audio.play();
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast'); 
+            t.innerText = "[SYS] " + msg; t.style.display = 'block';
+            setTimeout(() => t.style.display = 'none', 2000);
+        }
+
+        function switchTab(tab, animate) {
+            playAudio('click');
+            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+            document.getElementById('view-'+tab).classList.add('active');
+            document.getElementById('nav-'+tab).classList.add('active');
+            localStorage.setItem('lastTab', tab);
+            
+            if(tab === 'home') fetchDevices();
+            if(tab === 'dash') {
+                fetchEvents();
+                fetchQueue();
+                setTimeout(initChart, 200);
+            }
+        }
+
+        //弹窗控制(修复了之前的定位问题) 
+        function openSettings() { document.getElementById('settings-overlay').style.display = 'flex'; setTimeout(()=>document.getElementById('settings-overlay').classList.add('show'), 10); }
+        function closeSettings() { document.getElementById('settings-overlay').classList.remove('show'); setTimeout(()=>document.getElementById('settings-overlay').style.display = 'none', 300); }
+        function openProfileEdit() { document.getElementById('profile-overlay').style.display = 'flex'; setTimeout(()=>document.getElementById('profile-overlay').classList.add('show'), 10); }
+        function closeProfileEdit() { document.getElementById('profile-overlay').classList.remove('show'); setTimeout(()=>document.getElementById('profile-overlay').style.display = 'none', 300); }
+        
+        function openHUD(id) { document.getElementById('hud-frame').src = '/camera?id='+id; document.getElementById('hud-overlay').style.display = 'block'; }
+        function closeHUD() { document.getElementById('hud-overlay').style.display = 'none'; document.getElementById('hud-frame').src = ''; }
+
+        //数据获取与渲染
+        function fetchDevices() {
+            authFetch('/api/devices').then(r=>r.json()).then(d => {
+                const c = document.getElementById('device-container');
+                document.getElementById('device-count').innerText = d.length;
+                if(!d.length) { c.innerHTML = '<div style="padding:40px;text-align:center;color:#666;font-family:\'JetBrains Mono\'">NO_SIGNAL_DETECTED</div>'; return; }
+                const deviceKey = getDeviceKey();
+                const keyParam = deviceKey ? `&device_key=${encodeURIComponent(deviceKey)}` : '';
+                c.innerHTML = d.map(dev => {
+                    const safeId = escapeAttr(dev.id || '');
+                    const idFragment = (dev.id || '').split('-')[1] || '00';
+                    return `
+                    <div class="holo-card device-card" data-device-id="${safeId}">
+                        <div class="corner-tl"></div><div class="corner-br"></div>
+                        <div class="device-preview">
+                            <div class="live-tag">LIVE FEED</div>
+                            <img src="/api/stream?device_id=${encodeURIComponent(dev.id || '')}${keyParam}" onerror="this.style.opacity=0">
+                            <div class="device-id-overlay">${escapeHTML(idFragment)}</div>
+                        </div>
+                        <div class="device-info">
+                            <div>
+                                <div class="device-name">${escapeHTML(dev.id || '')}</div>
+                                <div class="device-meta">IP: 192.168.1.X • 5Ghz</div>
+                            </div>
+                            <div style="color:var(--accent);font-size:12px">● CONNECTED</div>
+                        </div>
+                        <div class="del-btn" style="position:absolute;bottom:15px;right:60px;z-index:10;color:#444" data-device-id="${safeId}">✕</div>
+                    </div>`;
+                }).join('');
+
+                document.querySelectorAll('.device-card').forEach(card => {
+                    card.addEventListener('click', () => {
+                        openHUD(card.dataset.deviceId || '');
+                    });
+                });
+
+                document.querySelectorAll('.del-btn').forEach(btn => {
+                    btn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        deleteDevice(btn.dataset.deviceId || '');
+                    });
+                });
+            });
+        }
+
+        function fetchEvents() {
+            const q = document.getElementById('event-search') ? document.getElementById('event-search').value : '';
+            const status = document.getElementById('event-status') ? document.getElementById('event-status').value : '';
+            const params = new URLSearchParams();
+            if (q) params.set('q', q);
+            if (status) params.set('status', status);
+            const url = '/api/events' + (params.toString() ? '?' + params.toString() : '');
+            authFetch(url).then(r=>r.json()).then(d => {
+                document.getElementById('total-count').innerText = d.count;
+                document.getElementById('event-list').innerHTML = (d.events || []).map(e => 
+                    `<div class="event-item" data-filename="${escapeAttr(e.Filename || '')}">
+                        <a href="/uploads/${encodeURIComponent(e.Filename || '')}" target="_blank"><img src="/uploads/${encodeURIComponent(e.Filename || '')}" class="event-img"></a>
+                        <div class="event-content">
+                            <div style="color:var(--accent);font-weight:bold;font-size:12px;font-family:'JetBrains Mono'">⚠ ${escapeHTML(e.DeviceID || '')}</div>
+                            <div style="font-size:11px;color:#ccc;margin:2px 0">${escapeHTML(e.AIAnalysis || 'PROCESSING...')}</div>
+                            <div style="font-size:10px;color:#888;font-family:'JetBrains Mono'">STATUS: ${escapeHTML(e.Status || 'open')} • AI: ${escapeHTML(e.AnalysisStatus || 'pending')} ${e.AnalysisError ? '• ERR: ' + escapeHTML(e.AnalysisError) : ''} ${e.Tags ? '• TAGS: ' + escapeHTML(e.Tags) : ''}</div>
+                            <div style="font-size:10px;color:#666;font-family:'JetBrains Mono'">${escapeHTML(e.CaptureTime || '')}</div>
+                            ${!e.AIAnalysis ? `<button class="btn-analyze" data-filename="${escapeAttr(e.Filename || '')}">INIT_AI_SCAN</button>` : ''}
+                            ${e.Status !== 'closed' ? `<button class="btn-analyze btn-ack" data-filename="${escapeAttr(e.Filename || '')}">ACK</button>` : ''}
+                        </div>
+                        <div class="event-delete" data-filename="${escapeAttr(e.Filename || '')}" style="color:#444;cursor:pointer;padding:5px">✕</div>
+                    </div>`
+                ).join('');
+
+                document.querySelectorAll('.event-delete').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        deleteEvent(btn.dataset.filename || '');
+                    });
+                });
+
+                document.querySelectorAll('.btn-analyze').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        if (btn.classList.contains('btn-ack')) {
+                            ackEvent(btn.dataset.filename || '');
+                            return;
+                        }
+                        analyze(btn.dataset.filename || '');
+                    });
+                });
+            });
+        }
+
+        function fetchQueue() {
+            authFetch('/api/queue').then(r=>r.json()).then(d => {
+                const el = document.getElementById('queue-status');
+                if (!el) return;
+                const queueText = d.capacity > 0 ? `${d.length}/${d.capacity}` : `${d.length}`;
+                el.innerText = `QUEUE: ${queueText} • ACTIVE: ${d.active || 0} • DONE: ${d.processed || 0} • FAIL: ${d.failed || 0}`;
+            }).catch(() => {});
+            authFetch('/api/ai/status').then(r=>r.json()).then(d => {
+                const el = document.getElementById('queue-status');
+                if (!el) return;
+                if (!(d.key_configured && d.endpoint_configured && d.model_configured)) el.innerText += ' • AI_CONFIG_INCOMPLETE';
+                if (d.model_warning) el.innerText += ' • MODEL_WARNING';
+            }).catch(() => {});
+        }
+
+        //功能函数
+        function deleteDevice(id) { if(confirm('CONFIRM DELETION?')) authFetch('/delete_device?device_id='+encodeURIComponent(id), {method:'POST'}).then(()=>{showToast('NODE_REMOVED'); fetchDevices();}); }
+        function deleteEvent(f) { if(confirm('PURGE RECORD?')) authFetch('/delete?filename='+encodeURIComponent(f), {method:'POST'}).then(()=>{showToast('LOG_PURGED'); fetchEvents();}); }
+        function analyze(f) {
+            showToast('AI_QUEUEING...');
+            authFetch('/analyze', {method:'POST', body: JSON.stringify({filename: f})})
+                .then(async r => {
+                    const data = await r.json().catch(() => ({}));
+                    if (!r.ok || data.error) throw new Error(data.error || 'AI_QUEUE_FAILED');
+                    return data;
+                })
+                .then(() => {
+                    showToast('AI_QUEUED');
+                    fetchEvents();
+                    fetchQueue();
+                    setTimeout(fetchEvents, 2500);
+                })
+                .catch(e => showToast((e.message || 'AI_QUEUE_FAILED').trim()));
+        }
+        function ackEvent(f) { authFetch('/api/events/update', {method:'POST', body: JSON.stringify({filename: f, status: 'closed'})}).then(()=>{showToast('EVENT_ACKED'); fetchEvents();}); }
+        function promptNewDevice() { const id = prompt("INPUT DEVICE ID:", "CAM-UNIT-" + Math.floor(Math.random()*99)); if(id) window.location.href = '/camera?id='+id; }
+        
+        function saveConfig() { 
+            const d = {
+                ai_endpoint:document.getElementById('s-ep').value,
+                ai_key:document.getElementById('s-key').value,
+                ai_model:document.getElementById('s-model').value,
+                device_key:document.getElementById('s-device-key').value,
+                alert_keywords:document.getElementById('s-keywords').value,
+                upload_retention_days:Number(document.getElementById('s-retention').value || 30),
+                admin_user:"{{.AdminUser}}"
+            };
+            authFetch('/settings', {method:'POST', body:JSON.stringify(d)}).then(()=>{
+                localStorage.setItem('deviceKey', document.getElementById('s-device-key').value || '');
+                closeSettings();
+                showToast('CONFIG_SAVED');
+            });
+        }
+        function saveProfile() {
+             const u=document.getElementById('p-user').value, p=document.getElementById('p-pass').value;
+             authFetch('/api/update_profile',{method:'POST', body:JSON.stringify({username:u, password:p})}).then(()=>{ closeProfileEdit(); showToast('PROFILE_UPDATED'); location.reload(); });
+        }
+        function handleAvatarUpload(input) {
+            if (input.files && input.files[0]) {
+                const fd = new FormData(); fd.append('avatar', input.files[0]);
+                showToast('AVATAR_UPLOADING');
+                authFetch('/api/upload_avatar', {method:'POST', body:fd})
+                    .then(async r => {
+                        if (!r.ok) throw new Error(await r.text() || 'UPLOAD_FAILED');
+                        return r.json();
+                    })
+                    .then(d => {
+                        if (d.status !== 'ok') throw new Error('UPLOAD_FAILED');
+                        const avatar = document.getElementById('user-avatar');
+                        avatar.src = d.url + '?t=' + Date.now();
+                        showToast('AVATAR_UPDATED');
+                    })
+                    .catch(e => showToast((e.message || 'UPLOAD_FAILED').trim()))
+                    .finally(() => { input.value = ''; });
+            }
+        }
+
+        //ECharts 图表
+        let chartInstance;
+        function initChart() {
+            const dom = document.getElementById('chart');
+            if(!dom) return;
+            chartInstance = echarts.init(dom, 'dark', {renderer: 'canvas'});
+            chartInstance.setOption({
+                backgroundColor: 'transparent',
+                grid: {top:30, bottom:20, left:40, right:10},
+                tooltip: {trigger:'axis', backgroundColor:'rgba(0,0,0,0.8)', borderColor:'#333'},
+                xAxis: {type:'category', data:['M','T','W','T','F','S','S'], axisLine:{lineStyle:{color:'#333'}}, axisLabel:{color:'#666', fontFamily:'JetBrains Mono'}},
+                yAxis: {type:'value', splitLine:{lineStyle:{color:'rgba(255,255,255,0.05)'}}, axisLabel:{color:'#666', fontFamily:'JetBrains Mono'}},
+                series: [{
+                    data:[3,1,5,2,8,4,1], type:'line', smooth:true, showSymbol:false,
+                    lineStyle:{width:3, color:'#00f3ff', shadowColor:'rgba(0,243,255,0.5)', shadowBlur:15},
+                    areaStyle:{color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0, color:'rgba(0,243,255,0.3)'}, {offset:1, color:'transparent'}])}
+                }]
+            });
+        }
+        window.addEventListener('resize', ()=>chartInstance && chartInstance.resize());
+
+
+    //启动 SSE 监听
+    function initAlertSystem() {
+        console.log("连接报警系统...");
+        const deviceKey = getDeviceKey();
+        const sseUrl = deviceKey ? `/api/events/subscribe?device_key=${encodeURIComponent(deviceKey)}` : "/api/events/subscribe";
+        const evtSource = new EventSource(sseUrl);
+
+        evtSource.onmessage = function(event) {
+            // 解析后端发来的 JSON
+            const data = JSON.parse(event.data);
+            
+            if (data.type === "ALERT") {
+                console.log("收到警报:", data);
+                showRedAlert(data);
+            }
+        };
+
+        evtSource.onerror = function() {
+            console.log("连接断开，3秒后重连...");
+            evtSource.close();
+            setTimeout(initAlertSystem, 3000);
+        };
+    }
+
+    //红色弹窗特效
+    function showRedAlert(data) {
+        // new Audio('/static/alarm.mp3').play().catch(e=>{});
+
+        //创建全屏闪烁层
+        const overlay = document.createElement('div');
+        overlay.style.position = 'fixed';
+        overlay.style.top = '0';
+        overlay.style.left = '0';
+        overlay.style.width = '100vw';
+        overlay.style.height = '100vh';
+        overlay.style.backgroundColor = 'rgba(255, 0, 0, 0.3)';
+        overlay.style.zIndex = '9999';
+        overlay.style.display = 'flex';
+        overlay.style.justifyContent = 'center';
+        overlay.style.alignItems = 'center';
+        overlay.style.pointerEvents = 'none';
+        overlay.innerHTML = `
+            <div style="background: #000; border: 2px solid #ff0000; padding: 20px; color: #ff0000; text-align: center; box-shadow: 0 0 50px #ff0000;">
+                <h1 style="font-size: 3em; margin: 0;">⚠️ INTRUSION DETECTED ⚠️</h1>
+                <h3 style="color: #fff;">${data.device_id} | ${data.time}</h3>
+                <p style="color: #ccc; font-size: 1.2em;">${data.content}</p>
+                <img src="${data.image}" style="max-height: 300px; border: 1px solid #ff0000; margin-top: 10px;">
+            </div>
+        `;
+        
+        document.body.appendChild(overlay);
+
+        //闪烁动画
+        let flashCount = 0;
+        const interval = setInterval(() => {
+            overlay.style.visibility = (overlay.style.visibility === 'hidden') ? 'visible' : 'hidden';
+            flashCount++;
+            if (flashCount > 10) {
+                clearInterval(interval);
+                document.body.removeChild(overlay);
+            }
+        }, 300);
+        
+        //同时刷新左侧的事件列表
+        fetchEvents(); 
+    }
+
+    // 页面加载完成后启动
+    window.addEventListener('load', initAlertSystem);
+    </script>
+</body>
+</html>

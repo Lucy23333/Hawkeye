@@ -1,0 +1,7 @@
+config.json
+/config/
+server.log
+uploads/
+.env
+/server
+*.tmp
