@@ -1,0 +1,13 @@
+bin/
+obj/
+.vs/
+*.user
+
+Hawkeye.Client/clientsettings.json
+Hawkeye.Client/Snapshots/
+Hawkeye.Client/bin/
+Hawkeye.Client/obj/
+Hawkeye.Client/publish/
+Hawkeye.Client/releases/
+Hawkeye.Client/*.zip
+Hawkeye.Client/*.7z

@@ -1,248 +1,401 @@
-﻿using System;
+using System.Globalization;
 using System.IO;
-using System.Linq;
-using System.Net.Http; // 🔥 新增：网络通信库
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows;
+using Hawkeye.Client.Models;
+using Hawkeye.Client.Services;
 using Microsoft.Win32;
 using OpenCvSharp;
 using OpenCvSharp.WpfExtensions;
-using YoloDotNet;
-using YoloDotNet.Models;
-using SkiaSharp;
 
-namespace Hawkeye.Client
+namespace Hawkeye.Client;
+
+public partial class MainWindow : System.Windows.Window
 {
-    public partial class MainWindow : System.Windows.Window
+    private readonly ClientSettingsStore _settingsStore = new();
+    private readonly EvidenceUploadService _uploadService = new();
+    private readonly YoloDetectionService? _detector;
+    private readonly object _latestFrameLock = new();
+
+    private ClientSettings _settings;
+    private VideoCapture? _capture;
+    private Mat? _latestFrame;
+    private CancellationTokenSource? _captureCts;
+    private CancellationTokenSource? _uploadCts;
+    private Task? _captureTask;
+    private bool _isRunning;
+    private DateTime _lastCaptureTime = DateTime.MinValue;
+    private int _snapshotCount;
+    private int _uploadSuccessCount;
+    private int _uploadFailCount;
+
+    public MainWindow()
     {
-        private VideoCapture _capture;
-        private bool _isRunning = false;
-        private CancellationTokenSource _cts;
-        private Yolo _yolo;
+        InitializeComponent();
 
-        // 抓拍相关
-        private DateTime _lastCaptureTime = DateTime.MinValue;
-        private TimeSpan _captureInterval = TimeSpan.FromSeconds(3); // 改成 3秒，防止传太快服务器受不了
+        _settings = _settingsStore.Load();
+        LoadSettingsToUi();
+        TxtConfigPath.Text = $"配置文件：{_settingsStore.SettingsPath}";
 
-        // 🔥 新增：专门负责上传的快递员 (HttpClient)
-        private static readonly HttpClient client = new HttpClient();
-
-        // 🔥 请确认这个 IP 是你 Ubuntu 的 IP！
-        // ❌ 以前是: "http://192.168.153.131:8080/upload"
-        // ✅ 改成公网 (注意后面要带 /upload):
-        private const string SERVER_URL = " https://2dab6389.r27.cpolar.top/upload";
-
-        public MainWindow()
+        try
         {
-            InitializeComponent();
-            InitializeAI();
+            _detector = new YoloDetectionService();
+            TxtModelStatus.Text = _detector.IsReady
+                ? $"模型：{_detector.ModelPath}"
+                : "模型：未找到 yolov8s.onnx 或 yolov8n.onnx";
+        }
+        catch (Exception ex)
+        {
+            TxtModelStatus.Text = $"模型：初始化失败 - {ex.Message}";
         }
 
-        private void InitializeAI()
+        UpdateButtons();
+    }
+
+    private void LoadSettingsToUi()
+    {
+        TxtServerUrl.Text = _settings.ServerUrl;
+        TxtDeviceId.Text = _settings.DeviceId;
+        TxtDeviceKey.Password = _settings.DeviceKey;
+        TxtConfidence.Text = _settings.Confidence.ToString("0.00", CultureInfo.InvariantCulture);
+        TxtFrameInterval.Text = _settings.DetectionFrameInterval.ToString(CultureInfo.InvariantCulture);
+        TxtCaptureInterval.Text = _settings.CaptureIntervalSeconds.ToString(CultureInfo.InvariantCulture);
+        TxtCameraIndex.Text = _settings.CameraIndex.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private ClientSettings ReadSettingsFromUi()
+    {
+        var settings = new ClientSettings
         {
-            try
-            {
-                string modelPath = File.Exists("yolov8s.onnx") ? "yolov8s.onnx" : "yolov8n.onnx";
-                var options = new YoloOptions { OnnxModel = modelPath };
-                _yolo = new Yolo(options);
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"AI 初始化失败: {ex.Message}");
-            }
-        }
+            ServerUrl = TxtServerUrl.Text,
+            DeviceId = TxtDeviceId.Text,
+            DeviceKey = TxtDeviceKey.Password,
+            Confidence = ParseDouble(TxtConfidence.Text, _settings.Confidence),
+            DetectionFrameInterval = ParseInt(TxtFrameInterval.Text, _settings.DetectionFrameInterval),
+            CaptureIntervalSeconds = ParseInt(TxtCaptureInterval.Text, _settings.CaptureIntervalSeconds),
+            CameraIndex = ParseInt(TxtCameraIndex.Text, _settings.CameraIndex),
+            UploadTimeoutSeconds = _settings.UploadTimeoutSeconds
+        };
+        settings.Normalize();
+        return settings;
+    }
 
-        private void BtnCamera_Click(object sender, RoutedEventArgs e)
+    private static int ParseInt(string value, int fallback)
+        => int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? parsed : fallback;
+
+    private static double ParseDouble(string value, double fallback)
+        => double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) ? parsed : fallback;
+
+    private void BtnSaveSettings_Click(object sender, RoutedEventArgs e)
+    {
+        _settings = ReadSettingsFromUi();
+        _settingsStore.Save(_settings);
+        LoadSettingsToUi();
+        TxtRuntimeStatus.Text = "配置已保存";
+    }
+
+    private void BtnCamera_Click(object sender, RoutedEventArgs e)
+    {
+        StartHawkeye(useFile: false);
+    }
+
+    private void BtnVideo_Click(object sender, RoutedEventArgs e)
+    {
+        var openFileDialog = new OpenFileDialog
         {
-            StartHawkeye(useFile: false);
-        }
+            Filter = "视频文件|*.mp4;*.avi;*.mkv|所有文件|*.*"
+        };
 
-        private void BtnVideo_Click(object sender, RoutedEventArgs e)
+        if (openFileDialog.ShowDialog() == true)
         {
-            OpenFileDialog openFileDialog = new OpenFileDialog();
-            openFileDialog.Filter = "视频文件|*.mp4;*.avi;*.mkv|所有文件|*.*";
-            if (openFileDialog.ShowDialog() == true)
-            {
-                StartHawkeye(useFile: true, filePath: openFileDialog.FileName);
-            }
-        }
-
-        private void StartHawkeye(bool useFile, string filePath = "")
-        {
-            if (_isRunning) return;
-
-            try
-            {
-                if (useFile)
-                    _capture = new VideoCapture(filePath);
-                else
-                    _capture = new VideoCapture(0, VideoCaptureAPIs.DSHOW);
-
-                if (!_capture.IsOpened())
-                {
-                    MessageBox.Show("无法打开视频源！");
-                    return;
-                }
-
-                _isRunning = true;
-                _cts = new CancellationTokenSource();
-                Task.Run(() => CaptureLoop(_cts.Token));
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"启动出错: {ex.Message}");
-            }
-        }
-
-        private void BtnStop_Click(object sender, RoutedEventArgs e)
-        {
-            _isRunning = false;
-            _cts?.Cancel();
-            Thread.Sleep(100);
-            _capture?.Release();
-            _capture = null;
-            CameraView.Source = null;
-        }
-
-        private void CaptureLoop(CancellationToken token)
-        {
-            // 确保截图文件夹存在
-            string snapshotFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Snapshots");
-            if (!Directory.Exists(snapshotFolder)) Directory.CreateDirectory(snapshotFolder);
-
-            using (Mat frame = new Mat())
-            {
-                // 🔥 优化变量 1：帧计数器
-                long frameCount = 0;
-
-                // 🔥 优化变量 2：缓存上一次的 AI 结果
-                // 这样在 AI 休息的时候，我们依然能画出框框，不会闪烁
-                System.Collections.Generic.List<ObjectDetection> lastResults = new System.Collections.Generic.List<ObjectDetection>();
-
-                while (_isRunning && !token.IsCancellationRequested)
-                {
-                    _capture.Read(frame);
-                    if (frame.Empty()) break;
-
-                    frameCount++; // 每读一帧，计数+1
-
-                    int personCount = 0;
-                    bool isSnapshotTaken = false;
-
-                    // --- 🧠 AI 识别 (跳帧优化版) ---
-                    // 只有当帧数是 3 的倍数时 (1, 4, 7...) 才跑 AI
-                    // 这里的 '3' 可以改：如果还卡就改成 5，如果不卡可以改成 2
-                    if (frameCount % 3 == 0)
-                    {
-                        if (_yolo != null)
-                        {
-                            try
-                            {
-                                var data = frame.CvtColor(ColorConversionCodes.BGR2RGB).ToBytes(".jpg");
-                                using (var skImage = SKImage.FromEncodedData(data))
-                                {
-                                    // 真正跑 AI
-                                    var results = _yolo.RunObjectDetection(skImage, confidence: 0.25);
-
-                                    // 更新缓存
-                                    lastResults = results;
-                                }
-                            }
-                            catch { }
-                        }
-                    }
-                    // -----------------------------
-
-                    // --- 🎨 绘制 (每一帧都画，用的是 lastResults) ---
-                    foreach (var item in lastResults)
-                    {
-                        if (item.Label.Name == "person")
-                        {
-                            personCount++;
-                            var rect = new OpenCvSharp.Rect((int)item.BoundingBox.Left, (int)item.BoundingBox.Top, (int)item.BoundingBox.Width, (int)item.BoundingBox.Height);
-                            Cv2.Rectangle(frame, rect, Scalar.Red, 2);
-                        }
-                    }
-
-                    // --- 📸 抓拍 & 上传 (逻辑不变) ---
-                    if (personCount > 0)
-                    {
-                        if ((DateTime.Now - _lastCaptureTime).TotalSeconds > 1)
-                        {
-                            // 声音还是会有，证明系统在工作
-                            // System.Media.SystemSounds.Hand.Play(); // 嫌吵可以注释掉
-                        }
-
-                        if (DateTime.Now - _lastCaptureTime > _captureInterval)
-                        {
-                            string fileName = $"Evidence_{DateTime.Now:yyyyMMdd_HHmmss_fff}.jpg";
-                            string fullPath = Path.Combine(snapshotFolder, fileName);
-
-                            frame.SaveImage(fullPath);
-                            Task.Run(() => UploadImageToUbuntu(fullPath));
-
-                            _lastCaptureTime = DateTime.Now;
-                            isSnapshotTaken = true;
-                            Console.WriteLine($"[抓拍] {fileName}");
-                        }
-                    }
-
-                    // UI 绘制
-                    string statusText = $"CROWD: {personCount}";
-                    Cv2.Rectangle(frame, new OpenCvSharp.Rect(0, 0, 400, 60), Scalar.Black, -1);
-                    Cv2.PutText(frame, statusText, new OpenCvSharp.Point(10, 45), HersheyFonts.HersheyComplex, 1.2, personCount > 0 ? Scalar.Red : Scalar.Green, 2);
-
-                    if (isSnapshotTaken || (DateTime.Now - _lastCaptureTime).TotalSeconds < 0.5)
-                    {
-                        Cv2.Circle(frame, new OpenCvSharp.Point(380, 30), 15, Scalar.Red, -1);
-                        Cv2.PutText(frame, "UPLOADING...", new OpenCvSharp.Point(410, 45), HersheyFonts.HersheyComplex, 0.7, Scalar.Red, 2);
-                    }
-
-                    Dispatcher.Invoke(() => CameraView.Source = frame.ToWriteableBitmap());
-
-                    // 🔥 优化变量 3：减少休眠时间，让它跑得跟视频一样快
-                    // 之前是 10ms，现在 AI 跑得少了，我们可以让 UI 刷新更快点
-                    Thread.Sleep(1);
-                }
-            }
-            Dispatcher.Invoke(() => { if (_isRunning) BtnStop_Click(null, null); });
-        }
-
-        // --- 🔥 核心上传函数 ---
-        private async Task UploadImageToUbuntu(string filePath)
-        {
-            try
-            {
-                using (var content = new MultipartFormDataContent())
-                {
-                    byte[] fileBytes = File.ReadAllBytes(filePath);
-                    var fileContent = new ByteArrayContent(fileBytes);
-                    content.Add(fileContent, "image", Path.GetFileName(filePath));
-
-                    // 发送 POST 请求
-                    var response = await client.PostAsync(SERVER_URL, content);
-
-                    if (response.IsSuccessStatusCode)
-                    {
-                        Console.WriteLine("✅ 上传成功！Ubuntu 已接收。");
-                    }
-                    else
-                    {
-                        Console.WriteLine($"❌ 上传失败: {response.StatusCode}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"❌ 网络错误 (Ubuntu 没开?): {ex.Message}");
-            }
-        }
-
-        protected override void OnClosed(EventArgs e)
-        {
-            BtnStop_Click(null, null);
-            base.OnClosed(e);
+            StartHawkeye(useFile: true, filePath: openFileDialog.FileName);
         }
     }
-}   
+
+    private async void BtnStop_Click(object sender, RoutedEventArgs e)
+    {
+        await StopAsync();
+    }
+
+    private async void BtnTestUpload_Click(object sender, RoutedEventArgs e)
+    {
+        await UploadCurrentFrameAsync();
+    }
+
+    private void StartHawkeye(bool useFile, string filePath = "")
+    {
+        if (_isRunning)
+        {
+            return;
+        }
+
+        _settings = ReadSettingsFromUi();
+        _settingsStore.Save(_settings);
+        LoadSettingsToUi();
+
+        try
+        {
+            var capture = useFile
+                ? new VideoCapture(filePath)
+                : new VideoCapture(_settings.CameraIndex, VideoCaptureAPIs.DSHOW);
+
+            if (!capture.IsOpened())
+            {
+                capture.Dispose();
+                MessageBox.Show("无法打开视频源。");
+                return;
+            }
+
+            _capture = capture;
+            _captureCts = new CancellationTokenSource();
+            _uploadCts = new CancellationTokenSource();
+            _isRunning = true;
+            _lastCaptureTime = DateTime.MinValue;
+
+            TxtRuntimeStatus.Text = useFile ? "视频演示运行中" : "摄像头运行中";
+            TxtUploadStatus.Text = "上传：待机";
+            TxtDetectionStatus.Text = "检测：等待画面";
+            UpdateButtons();
+
+            var runSettings = ReadSettingsFromUi();
+            _captureTask = Task.Run(() => CaptureLoopAsync(capture, runSettings, _captureCts.Token));
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"启动出错: {ex.Message}");
+            _isRunning = false;
+            UpdateButtons();
+        }
+    }
+
+    private async Task StopAsync()
+    {
+        if (!_isRunning && _captureTask == null)
+        {
+            CameraView.Source = null;
+            return;
+        }
+
+        _isRunning = false;
+        _captureCts?.Cancel();
+        _uploadCts?.Cancel();
+
+        var task = _captureTask;
+        if (task != null)
+        {
+            try
+            {
+                await task;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
+
+        _captureTask = null;
+        _captureCts?.Dispose();
+        _captureCts = null;
+        _uploadCts?.Dispose();
+        _uploadCts = null;
+        CameraView.Source = null;
+        lock (_latestFrameLock)
+        {
+            _latestFrame?.Dispose();
+            _latestFrame = null;
+        }
+        TxtRuntimeStatus.Text = "已停止";
+        UpdateButtons();
+    }
+
+    private async Task CaptureLoopAsync(VideoCapture capture, ClientSettings settings, CancellationToken token)
+    {
+        var snapshotFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Snapshots");
+        Directory.CreateDirectory(snapshotFolder);
+
+        using var frame = new Mat();
+        var frameCount = 0L;
+        var lastResults = new List<DetectionResult>();
+
+        try
+        {
+            while (!token.IsCancellationRequested)
+            {
+                if (!capture.Read(frame) || frame.Empty())
+                {
+                    break;
+                }
+
+                frameCount++;
+                StoreLatestFrame(frame);
+                var personCount = 0;
+                var snapshotTaken = false;
+
+                if (frameCount % settings.DetectionFrameInterval == 0 && _detector?.IsReady == true)
+                {
+                    try
+                    {
+                        lastResults = _detector.Detect(frame, settings.Confidence);
+                    }
+                    catch (Exception ex)
+                    {
+                        await Dispatcher.InvokeAsync(() => TxtDetectionStatus.Text = $"检测：失败 - {ex.Message}");
+                    }
+                }
+
+                foreach (var item in lastResults)
+                {
+                    if (!string.Equals(item.Label, "person", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    personCount++;
+                    Cv2.Rectangle(frame, item.BoundingBox, Scalar.Red, 2);
+                }
+
+                if (personCount > 0 && DateTime.Now - _lastCaptureTime > TimeSpan.FromSeconds(settings.CaptureIntervalSeconds))
+                {
+                    var fileName = $"Evidence_{DateTime.Now:yyyyMMdd_HHmmss_fff}.jpg";
+                    var fullPath = Path.Combine(snapshotFolder, fileName);
+
+                    frame.SaveImage(fullPath);
+                    _lastCaptureTime = DateTime.Now;
+                    _snapshotCount++;
+                    snapshotTaken = true;
+
+                    var uploadToken = _uploadCts?.Token ?? CancellationToken.None;
+                    _ = UploadSnapshotAsync(fullPath, settings, uploadToken);
+                }
+
+                DrawOverlay(frame, personCount, snapshotTaken);
+                await Dispatcher.InvokeAsync(() =>
+                {
+                    CameraView.Source = frame.ToWriteableBitmap();
+                    TxtDetectionStatus.Text = $"检测：person={personCount} frame={frameCount}";
+                    TxtSnapshotStatus.Text = $"抓拍：{_snapshotCount}";
+                    BtnTestUpload.IsEnabled = true;
+                });
+
+                await Task.Delay(1, token);
+            }
+        }
+        finally
+        {
+            capture.Release();
+            capture.Dispose();
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (ReferenceEquals(_capture, capture))
+                {
+                    _capture = null;
+                }
+
+                _isRunning = false;
+                TxtRuntimeStatus.Text = token.IsCancellationRequested ? "已停止" : "视频源已结束";
+                UpdateButtons();
+            });
+        }
+    }
+
+    private async Task UploadSnapshotAsync(string filePath, ClientSettings settings, CancellationToken token)
+    {
+        await Dispatcher.InvokeAsync(() => TxtUploadStatus.Text = $"上传：{Path.GetFileName(filePath)}");
+
+        var result = await _uploadService.UploadAsync(filePath, settings, token);
+        if (result.Success)
+        {
+            _uploadSuccessCount++;
+        }
+        else
+        {
+            _uploadFailCount++;
+        }
+
+        await Dispatcher.InvokeAsync(() =>
+        {
+            TxtUploadStatus.Text = $"上传：成功 {_uploadSuccessCount} / 失败 {_uploadFailCount}；{result.Message}";
+        });
+    }
+
+    private static void DrawOverlay(Mat frame, int personCount, bool snapshotTaken)
+    {
+        var statusText = $"CROWD: {personCount}";
+        Cv2.Rectangle(frame, new OpenCvSharp.Rect(0, 0, 400, 60), Scalar.Black, -1);
+        Cv2.PutText(
+            frame,
+            statusText,
+            new OpenCvSharp.Point(10, 45),
+            HersheyFonts.HersheyComplex,
+            1.2,
+            personCount > 0 ? Scalar.Red : Scalar.Green,
+            2);
+
+        if (!snapshotTaken)
+        {
+            return;
+        }
+
+        Cv2.Circle(frame, new OpenCvSharp.Point(380, 30), 15, Scalar.Red, -1);
+        Cv2.PutText(frame, "UPLOADING...", new OpenCvSharp.Point(410, 45), HersheyFonts.HersheyComplex, 0.7, Scalar.Red, 2);
+    }
+
+    private void UpdateButtons()
+    {
+        BtnCamera.IsEnabled = !_isRunning;
+        BtnVideo.IsEnabled = !_isRunning;
+        BtnSaveSettings.IsEnabled = !_isRunning;
+                BtnStop.IsEnabled = _isRunning;
+        BtnTestUpload.IsEnabled = _latestFrame != null;
+    }
+
+    private void StoreLatestFrame(Mat frame)
+    {
+        lock (_latestFrameLock)
+        {
+            _latestFrame?.Dispose();
+            _latestFrame = frame.Clone();
+        }
+    }
+
+    private async Task UploadCurrentFrameAsync()
+    {
+        Mat? snapshot;
+        lock (_latestFrameLock)
+        {
+            snapshot = _latestFrame?.Clone();
+        }
+
+        if (snapshot == null || snapshot.Empty())
+        {
+            TxtUploadStatus.Text = "上传：当前没有可上传画面";
+            snapshot?.Dispose();
+            return;
+        }
+
+        try
+        {
+            _settings = ReadSettingsFromUi();
+            _settingsStore.Save(_settings);
+
+            var snapshotFolder = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Snapshots");
+            Directory.CreateDirectory(snapshotFolder);
+            var fileName = $"Manual_{DateTime.Now:yyyyMMdd_HHmmss_fff}.jpg";
+            var fullPath = Path.Combine(snapshotFolder, fileName);
+            snapshot.SaveImage(fullPath);
+            _snapshotCount++;
+            TxtSnapshotStatus.Text = $"抓拍：{_snapshotCount}";
+
+            using var uploadCts = new CancellationTokenSource();
+            await UploadSnapshotAsync(fullPath, _settings, uploadCts.Token);
+        }
+        finally
+        {
+            snapshot.Dispose();
+        }
+    }
+
+    protected override async void OnClosed(EventArgs e)
+    {
+        await StopAsync();
+        base.OnClosed(e);
+    }
+}

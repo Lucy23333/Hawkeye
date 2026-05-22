@@ -1,20 +1,98 @@
-﻿<Window x:Class="Hawkeye.Client.MainWindow"
+<Window x:Class="Hawkeye.Client.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Hawkeye System - V1.0" Height="600" Width="800" Background="#2D2D30">
+        Title="Hawkeye Client" Height="720" Width="1040" MinHeight="640" MinWidth="920" Background="#202124">
+    <Grid Margin="14">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="320"/>
+        </Grid.ColumnDefinitions>
 
-    <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
+        <Border Grid.Column="0" Background="#111315" BorderBrush="#3A3D41" BorderThickness="1" CornerRadius="4">
+            <Grid>
+                <Image x:Name="CameraView" Margin="10" Stretch="Uniform"/>
+                <Border VerticalAlignment="Top" HorizontalAlignment="Left" Margin="18"
+                        Background="#CC000000" Padding="12,8" CornerRadius="4">
+                    <StackPanel>
+                        <TextBlock x:Name="TxtRuntimeStatus" Text="待机" Foreground="#F1F3F4" FontSize="15" FontWeight="SemiBold"/>
+                        <TextBlock x:Name="TxtDetectionStatus" Text="AI 未启动" Foreground="#9AA0A6" FontSize="12" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+        </Border>
 
-        <Image x:Name="CameraView" Grid.Row="0" Margin="10" Stretch="Uniform"/>
+        <Border Grid.Column="1" Margin="14,0,0,0" Background="#2B2D30" BorderBrush="#3A3D41" BorderThickness="1" CornerRadius="4">
+            <Grid Margin="16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center" Margin="10">
-            <Button x:Name="BtnCamera" Content="启动摄像头" Padding="15,10" Click="BtnCamera_Click" Background="#007ACC" Foreground="White" FontWeight="Bold"/>
-            <Button x:Name="BtnVideo" Content="加载视频演示" Padding="15,10" Margin="10,0,0,0" Click="BtnVideo_Click" Background="#28A745" Foreground="White" FontWeight="Bold"/>
-            <Button x:Name="BtnStop" Content="停止" Padding="15,10" Margin="10,0,0,0" Click="BtnStop_Click" Background="#DC3545" Foreground="White"/>
-        </StackPanel>
+                <StackPanel Grid.Row="0">
+                    <TextBlock Text="采集端配置" Foreground="White" FontSize="20" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="TxtConfigPath" Text="" Foreground="#9AA0A6" FontSize="11" Margin="0,4,0,16" TextWrapping="Wrap"/>
+
+                    <TextBlock Text="后端上传地址" Foreground="#BDC1C6" FontSize="12"/>
+                    <TextBox x:Name="TxtServerUrl" Margin="0,5,0,12" Padding="8" Background="#1F2023" Foreground="White" BorderBrush="#55585C"/>
+
+                    <TextBlock Text="设备 ID" Foreground="#BDC1C6" FontSize="12"/>
+                    <TextBox x:Name="TxtDeviceId" Margin="0,5,0,12" Padding="8" Background="#1F2023" Foreground="White" BorderBrush="#55585C"/>
+
+                    <TextBlock Text="设备密钥 X-Device-Key" Foreground="#BDC1C6" FontSize="12"/>
+                    <PasswordBox x:Name="TxtDeviceKey" Margin="0,5,0,12" Padding="8" Background="#1F2023" Foreground="White" BorderBrush="#55585C"/>
+
+                    <Grid Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                            <TextBlock Text="置信度" Foreground="#BDC1C6" FontSize="12"/>
+                            <TextBox x:Name="TxtConfidence" Margin="0,5,0,0" Padding="8" Background="#1F2023" Foreground="White" BorderBrush="#55585C"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                            <TextBlock Text="检测跳帧" Foreground="#BDC1C6" FontSize="12"/>
+                            <TextBox x:Name="TxtFrameInterval" Margin="0,5,0,0" Padding="8" Background="#1F2023" Foreground="White" BorderBrush="#55585C"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                            <TextBlock Text="抓拍间隔秒" Foreground="#BDC1C6" FontSize="12"/>
+                            <TextBox x:Name="TxtCaptureInterval" Margin="0,5,0,0" Padding="8" Background="#1F2023" Foreground="White" BorderBrush="#55585C"/>
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Margin="8,0,0,0">
+                            <TextBlock Text="摄像头序号" Foreground="#BDC1C6" FontSize="12"/>
+                            <TextBox x:Name="TxtCameraIndex" Margin="0,5,0,0" Padding="8" Background="#1F2023" Foreground="White" BorderBrush="#55585C"/>
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+
+                <StackPanel Grid.Row="1" VerticalAlignment="Bottom" Margin="0,16,0,16">
+                    <TextBlock Text="运行信息" Foreground="White" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                    <TextBlock x:Name="TxtUploadStatus" Text="上传：待机" Foreground="#BDC1C6" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                    <TextBlock x:Name="TxtSnapshotStatus" Text="抓拍：0" Foreground="#BDC1C6" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                    <TextBlock x:Name="TxtModelStatus" Text="模型：加载中" Foreground="#BDC1C6" TextWrapping="Wrap"/>
+                </StackPanel>
+
+                <StackPanel Grid.Row="2">
+                    <Button x:Name="BtnSaveSettings" Content="保存配置" Padding="12,10" Click="BtnSaveSettings_Click"
+                            Background="#5F6368" Foreground="White" BorderBrush="#5F6368" FontWeight="SemiBold"/>
+                    <Button x:Name="BtnCamera" Content="启动摄像头" Padding="12,10" Margin="0,10,0,0" Click="BtnCamera_Click"
+                            Background="#1A73E8" Foreground="White" BorderBrush="#1A73E8" FontWeight="SemiBold"/>
+                    <Button x:Name="BtnVideo" Content="加载视频演示" Padding="12,10" Margin="0,10,0,0" Click="BtnVideo_Click"
+                            Background="#188038" Foreground="White" BorderBrush="#188038" FontWeight="SemiBold"/>
+                    <Button x:Name="BtnTestUpload" Content="测试上传当前帧" Padding="12,10" Margin="0,10,0,0" Click="BtnTestUpload_Click"
+                            Background="#F29900" Foreground="Black" BorderBrush="#F29900" FontWeight="SemiBold"/>
+                    <Button x:Name="BtnStop" Content="停止" Padding="12,10" Margin="0,10,0,0" Click="BtnStop_Click"
+                            Background="#B3261E" Foreground="White" BorderBrush="#B3261E" FontWeight="SemiBold"/>
+                </StackPanel>
+            </Grid>
+        </Border>
     </Grid>
 </Window>
