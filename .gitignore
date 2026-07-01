@@ -11,3 +11,13 @@ Hawkeye.Client/publish/
 Hawkeye.Client/releases/
 Hawkeye.Client/*.zip
 Hawkeye.Client/*.7z
+
+artifacts/
+
+hawkeye-backend/.env
+hawkeye-backend/config.json
+hawkeye-backend/server.log
+hawkeye-backend/*.pid
+hawkeye-backend/hawkeye-server
+hawkeye-backend/hawkeye-server.*
+hawkeye-backend/uploads/

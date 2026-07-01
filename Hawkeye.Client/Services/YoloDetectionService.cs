@@ -15,7 +15,11 @@ public sealed class YoloDetectionService
 
     public YoloDetectionService()
     {
-        ModelPath = File.Exists("yolov8s.onnx") ? "yolov8s.onnx" : "yolov8n.onnx";
+        var baseDirectory = AppContext.BaseDirectory;
+        var largeModelPath = Path.Combine(baseDirectory, "yolov8s.onnx");
+        var smallModelPath = Path.Combine(baseDirectory, "yolov8n.onnx");
+
+        ModelPath = File.Exists(largeModelPath) ? largeModelPath : smallModelPath;
         if (!File.Exists(ModelPath))
         {
             return;

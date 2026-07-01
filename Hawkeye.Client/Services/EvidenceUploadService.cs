@@ -37,12 +37,14 @@ public sealed class EvidenceUploadService
             request.Content = content;
 
             using var response = await Client.SendAsync(request, timeout.Token);
+            var responseBody = await response.Content.ReadAsStringAsync(timeout.Token);
             if (response.IsSuccessStatusCode)
             {
-                return UploadResult.Succeeded();
+                return new UploadResult(true, string.IsNullOrWhiteSpace(responseBody) ? "上传成功" : responseBody);
             }
 
-            return UploadResult.Failed($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+            var detail = string.IsNullOrWhiteSpace(responseBody) ? response.ReasonPhrase : responseBody.Trim();
+            return UploadResult.Failed($"HTTP {(int)response.StatusCode} {detail}");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
